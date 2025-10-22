@@ -2,6 +2,8 @@
 
 semantic search for the bufo zone
 
+**live at: [find-bufo.fly.dev](https://find-bufo.fly.dev/)**
+
 ## overview
 
 a one-page application for searching through all the bufos from [bufo.zone](https://bufo.zone/) using multi-modal embeddings and vector search.
