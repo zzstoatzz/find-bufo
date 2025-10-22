@@ -5,6 +5,7 @@ mod turbopuffer;
 
 use actix_cors::Cors;
 use actix_files as fs;
+use actix_governor::{Governor, GovernorConfigBuilder};
 use actix_web::{middleware, web, App, HttpResponse, HttpServer};
 use anyhow::Result;
 use config::Config;
@@ -26,6 +27,13 @@ async fn main() -> Result<()> {
 
     log::info!("starting bufo search server on {}:{}", host, port);
 
+    // rate limiter: 10 requests per minute per IP
+    let governor_conf = GovernorConfigBuilder::default()
+        .milliseconds_per_request(6000) // 1 request per 6 seconds = 10 per minute
+        .burst_size(10)
+        .finish()
+        .unwrap();
+
     HttpServer::new(move || {
         let cors = Cors::permissive();
 
@@ -36,6 +44,7 @@ async fn main() -> Result<()> {
             .route("/", web::get().to(index))
             .service(
                 web::scope("/api")
+                    .wrap(Governor::new(&governor_conf))
                     .route("/search", web::post().to(search::search))
                     .route("/health", web::get().to(|| async { HttpResponse::Ok().body("ok") }))
             )
