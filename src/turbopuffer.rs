@@ -3,13 +3,6 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
-pub struct UpsertRequest {
-    pub ids: Vec<String>,
-    pub vectors: Vec<Vec<f32>>,
-    pub attributes: serde_json::Value,
-}
-
-#[derive(Debug, Serialize)]
 pub struct QueryRequest {
     pub rank_by: Vec<serde_json::Value>,
     pub top_k: usize,
@@ -39,34 +32,6 @@ impl TurbopufferClient {
             api_key,
             namespace,
         }
-    }
-
-    pub async fn upsert(&self, request: UpsertRequest) -> Result<()> {
-        let url = format!(
-            "https://api.turbopuffer.com/v1/vectors/{}",
-            self.namespace
-        );
-
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await
-            .context("failed to send upsert request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "turbopuffer upsert failed with status {}: {}",
-                status,
-                body
-            );
-        }
-
-        Ok(())
     }
 
     pub async fn query(&self, request: QueryRequest) -> Result<QueryResponse> {

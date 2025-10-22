@@ -3,6 +3,7 @@ use crate::embedding::EmbeddingClient;
 use crate::turbopuffer::{QueryRequest, TurbopufferClient};
 use actix_web::{web, HttpResponse, Result as ActixResult};
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
@@ -28,6 +29,7 @@ pub struct BufoResult {
     pub score: f32, // normalized 0-1 score for display
 }
 
+#[instrument(skip(config), fields(query = %query.query, top_k = query.top_k))]
 pub async fn search(
     query: web::Json<SearchQuery>,
     config: web::Data<Config>,
@@ -38,17 +40,20 @@ pub async fn search(
         config.turbopuffer_namespace.clone(),
     );
 
-    // Run vector search
-    let query_embedding = embedding_client
-        .embed_text(&query.query)
-        .await
-        .map_err(|e| {
-            log::error!("failed to generate embedding: {}", e);
-            actix_web::error::ErrorInternalServerError(format!(
-                "failed to generate embedding: {}",
-                e
-            ))
-        })?;
+    // run vector search
+    let query_embedding = {
+        let _span = logfire::span!("generate_embedding", query = &query.query);
+        embedding_client
+            .embed_text(&query.query)
+            .await
+            .map_err(|e| {
+                logfire::error!("failed to generate embedding", error = e.to_string());
+                actix_web::error::ErrorInternalServerError(format!(
+                    "failed to generate embedding: {}",
+                    e
+                ))
+            })?
+    };
 
     let vector_request = QueryRequest {
         rank_by: vec![
@@ -60,24 +65,36 @@ pub async fn search(
         include_attributes: Some(vec!["url".to_string(), "name".to_string(), "filename".to_string()]),
     };
 
-    let vector_results = tpuf_client.query(vector_request).await.map_err(|e| {
-        log::error!("failed to query turbopuffer (vector): {}", e);
-        actix_web::error::ErrorInternalServerError(format!(
-            "failed to query turbopuffer (vector): {}",
-            e
-        ))
-    })?;
+    let vector_results = {
+        let _span = logfire::span!("vector_search", top_k = query.top_k * 2);
+        tpuf_client.query(vector_request).await.map_err(|e| {
+            logfire::error!("vector search failed", error = e.to_string());
+            actix_web::error::ErrorInternalServerError(format!(
+                "failed to query turbopuffer (vector): {}",
+                e
+            ))
+        })?
+    };
 
-    // Run BM25 text search
-    let bm25_results = tpuf_client.bm25_query(&query.query, query.top_k * 2).await.map_err(|e| {
-        log::error!("failed to query turbopuffer (BM25): {}", e);
-        actix_web::error::ErrorInternalServerError(format!(
-            "failed to query turbopuffer (BM25): {}",
-            e
-        ))
-    })?;
+    // run BM25 text search
+    let bm25_top_k = query.top_k * 2;
+    let bm25_results = {
+        let _span = logfire::span!("bm25_search", query = &query.query, top_k = bm25_top_k as i64);
+        tpuf_client.bm25_query(&query.query, bm25_top_k).await.map_err(|e| {
+            logfire::error!("bm25 search failed", error = e.to_string());
+            actix_web::error::ErrorInternalServerError(format!(
+                "failed to query turbopuffer (BM25): {}",
+                e
+            ))
+        })?
+    };
 
-    // Combine results using Reciprocal Rank Fusion (RRF)
+    // combine results using Reciprocal Rank Fusion (RRF)
+    let _span = logfire::span!("reciprocal_rank_fusion",
+        vector_results = vector_results.len(),
+        bm25_results = bm25_results.len()
+    );
+
     use std::collections::HashMap;
     let mut rrf_scores: HashMap<String, f32> = HashMap::new();
     let k = 60.0; // RRF constant
@@ -140,6 +157,12 @@ pub async fn search(
             })
         })
         .collect();
+
+    logfire::info!("search completed",
+        query = &query.query,
+        results_count = results.len() as i64,
+        top_score = results.first().map(|r| r.score as f64).unwrap_or(0.0)
+    );
 
     Ok(HttpResponse::Ok().json(SearchResponse { results }))
 }

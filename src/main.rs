@@ -9,6 +9,7 @@ use actix_governor::{Governor, GovernorConfigBuilder};
 use actix_web::{middleware, web, App, HttpResponse, HttpServer};
 use anyhow::Result;
 use config::Config;
+use opentelemetry_instrumentation_actix_web::{RequestMetrics, RequestTracing};
 
 async fn index() -> HttpResponse {
     HttpResponse::Ok()
@@ -19,13 +20,22 @@ async fn index() -> HttpResponse {
 #[actix_web::main]
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
-    env_logger::init();
+
+    // initialize logfire
+    let logfire = logfire::configure()
+        .finish()
+        .map_err(|e| anyhow::anyhow!("failed to initialize logfire: {}", e))?;
+
+    let _guard = logfire.shutdown_guard();
 
     let config = Config::from_env()?;
     let host = config.host.clone();
     let port = config.port;
 
-    log::info!("starting bufo search server on {}:{}", host, port);
+    logfire::info!("starting bufo search server",
+        host = &host,
+        port = port as i64
+    );
 
     // rate limiter: 10 requests per minute per IP
     let governor_conf = GovernorConfigBuilder::default()
@@ -38,6 +48,10 @@ async fn main() -> Result<()> {
         let cors = Cors::permissive();
 
         App::new()
+            // opentelemetry tracing and metrics FIRST
+            .wrap(RequestTracing::new())
+            .wrap(RequestMetrics::default())
+            // existing middleware
             .wrap(middleware::Logger::default())
             .wrap(cors)
             .app_data(web::Data::new(config.clone()))
