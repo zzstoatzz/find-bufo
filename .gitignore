@@ -1,0 +1,6 @@
+/target
+/sandbox
+/data
+.env
+server.log
+test_*.py
