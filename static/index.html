@@ -76,10 +76,12 @@
         .search-input-wrapper {
             display: flex;
             gap: 10px;
+            width: 100%;
         }
 
         input[type="text"] {
             flex: 1;
+            min-width: 0;
             padding: 15px;
             border: 2px solid #e0e0e0;
             border-radius: 8px;
@@ -102,6 +104,8 @@
             font-weight: 600;
             cursor: pointer;
             transition: background 0.3s;
+            white-space: nowrap;
+            flex-shrink: 0;
         }
 
         button:hover {

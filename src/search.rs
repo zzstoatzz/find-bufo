@@ -105,14 +105,12 @@ pub async fn search(
     scored_results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     scored_results.truncate(query.top_k);
 
-    // Normalize scores to 0-0.95 range
-    let max_score = scored_results.first().map(|(_, s)| *s).unwrap_or(1.0);
-    let min_score = scored_results.last().map(|(_, s)| *s).unwrap_or(0.0);
-    let score_range = (max_score - min_score).max(0.001); // avoid division by zero
-
+    // Scale RRF scores to 0-1 range
+    // RRF scores typically range from ~0.016 (single match, low rank) to ~0.033 (dual match, high rank)
+    // Scale by 25x to map good matches near 1.0, poor matches stay low
     let results: Vec<BufoResult> = scored_results
         .into_iter()
-        .filter_map(|(id, raw_score)| {
+        .filter_map(|(id, rrf_score)| {
             all_results.get(&id).map(|row| {
                 let url = row
                     .attributes
@@ -128,14 +126,16 @@ pub async fn search(
                     .unwrap_or(&row.id)
                     .to_string();
 
-                // Normalize score to 0-0.95 range
-                let normalized_score = ((raw_score - min_score) / score_range) * 0.95;
+                // Scale and clamp RRF score to 0-1 range
+                // Good matches (appearing high in both searches) will approach 1.0
+                // Weak matches will naturally be lower
+                let scaled_score = (rrf_score * 25.0).min(1.0);
 
                 BufoResult {
                     id: row.id.clone(),
                     url,
                     name,
-                    score: normalized_score,
+                    score: scaled_score,
                 }
             })
         })
