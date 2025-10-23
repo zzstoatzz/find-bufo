@@ -117,11 +117,8 @@ pub async fn search(
                 .unwrap_or(&row.id)
                 .to_string();
 
-            // convert cosine distance to similarity score
-            // turbopuffer's dist field contains the cosine distance
-            // for now, use a placeholder score based on rank
-            // TODO: extract actual distance from turbopuffer response
-            let score = 1.0; // placeholder - turbopuffer doesn't return dist in current response
+            // convert cosine distance to similarity score (0-1 range)
+            let score = 1.0 - (row.dist / 2.0);
 
             BufoResult {
                 id: row.id.clone(),

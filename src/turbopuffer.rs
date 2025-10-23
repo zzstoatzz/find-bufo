@@ -15,7 +15,7 @@ pub type QueryResponse = Vec<QueryRow>;
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct QueryRow {
     pub id: String,
-    pub dist: Option<f32>,
+    pub dist: f32,
     pub attributes: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -59,7 +59,7 @@ impl TurbopufferClient {
         }
 
         let body = response.text().await.context("failed to read response body")?;
-        log::debug!("turbopuffer response: {}", body);
+        log::info!("turbopuffer response: {}", body);
 
         serde_json::from_str(&body)
             .context(format!("failed to parse query response: {}", body))
