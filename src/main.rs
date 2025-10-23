@@ -10,6 +10,7 @@ use actix_web::{middleware, web, App, HttpResponse, HttpServer};
 use anyhow::Result;
 use config::Config;
 use opentelemetry_instrumentation_actix_web::{RequestMetrics, RequestTracing};
+use tracing::level_filters::LevelFilter;
 
 async fn index() -> HttpResponse {
     HttpResponse::Ok()
@@ -21,8 +22,9 @@ async fn index() -> HttpResponse {
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
-    // initialize logfire
+    // initialize logfire with info level filter to exclude trace/debug spans
     let logfire = logfire::configure()
+        .with_default_level_filter(LevelFilter::INFO)
         .finish()
         .map_err(|e| anyhow::anyhow!("failed to initialize logfire: {}", e))?;
 

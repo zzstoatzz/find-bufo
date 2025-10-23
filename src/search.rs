@@ -3,7 +3,6 @@ use crate::embedding::EmbeddingClient;
 use crate::turbopuffer::{QueryRequest, TurbopufferClient};
 use actix_web::{web, HttpResponse, Result as ActixResult};
 use serde::{Deserialize, Serialize};
-use tracing::instrument;
 
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
@@ -29,7 +28,6 @@ pub struct BufoResult {
     pub score: f32, // normalized 0-1 score for display
 }
 
-#[instrument(skip(config), fields(query = %query.query, top_k = query.top_k))]
 pub async fn search(
     query: web::Json<SearchQuery>,
     config: web::Data<Config>,
