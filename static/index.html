@@ -13,13 +13,15 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Fira Mono', 'Roboto Mono', monospace;
+            background: #8ba888;
             min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
             padding: 20px;
+            position: relative;
+            overflow-x: hidden;
         }
 
         .container {
@@ -79,6 +81,7 @@
             border: 2px solid #e0e0e0;
             border-radius: 8px;
             font-size: 16px;
+            font-family: inherit;
             transition: border-color 0.3s;
         }
 
@@ -94,6 +97,7 @@
             border: none;
             border-radius: 8px;
             font-size: 16px;
+            font-family: inherit;
             font-weight: 600;
             cursor: pointer;
             transition: background 0.3s;
@@ -197,6 +201,43 @@
             font-size: 1.2em;
             padding: 40px;
         }
+
+        .peeking-bufo {
+            position: fixed;
+            pointer-events: none;
+            z-index: 1000;
+            top: 50%;
+            width: 200px;
+            height: auto;
+            transition: opacity 0.3s ease-out;
+        }
+
+        .peeking-bufo.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .peeking-bufo-right {
+            right: 0;
+            transform: translateY(-50%);
+        }
+
+        .peeking-bufo-left {
+            left: 0;
+            transform: translateY(-50%) scaleX(-1);
+        }
+
+        @media (max-width: 1024px) {
+            .peeking-bufo {
+                width: 150px;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .peeking-bufo {
+                width: 100px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -223,16 +264,34 @@
         <div id="results" class="results"></div>
     </div>
 
+    <img src="https://all-the.bufo.zone/bufo-just-checking.gif" alt="bufo peeking" class="peeking-bufo" id="peekingBufo">
+
     <script>
         const searchInput = document.getElementById('searchInput');
         const searchButton = document.getElementById('searchButton');
         const resultsDiv = document.getElementById('results');
         const loadingDiv = document.getElementById('loading');
         const errorDiv = document.getElementById('error');
+        const peekingBufo = document.getElementById('peekingBufo');
+
+        // randomly position bufo on left or right
+        if (Math.random() < 0.5) {
+            peekingBufo.classList.add('peeking-bufo-left');
+        } else {
+            peekingBufo.classList.add('peeking-bufo-right');
+        }
+
+        let hasSearched = false;
 
         async function search() {
             const query = searchInput.value.trim();
             if (!query) return;
+
+            // hide bufo after first search
+            if (!hasSearched) {
+                peekingBufo.classList.add('hidden');
+                hasSearched = true;
+            }
 
             searchButton.disabled = true;
             loadingDiv.style.display = 'block';
