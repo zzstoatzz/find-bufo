@@ -59,7 +59,6 @@ impl TurbopufferClient {
         }
 
         let body = response.text().await.context("failed to read response body")?;
-        log::info!("turbopuffer response: {}", body);
 
         serde_json::from_str(&body)
             .context(format!("failed to parse query response: {}", body))
