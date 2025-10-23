@@ -47,22 +47,15 @@
             margin-bottom: 15px;
         }
 
-        .info {
-            color: rgba(255, 255, 255, 0.85);
-            font-size: 0.9em;
-            text-align: center;
-            margin-top: 10px;
+        .subtitle a {
+            color: inherit;
+            text-decoration: underline;
+            text-decoration-color: rgba(255, 255, 255, 0.4);
+            transition: text-decoration-color 0.2s;
         }
 
-        .info a {
-            color: rgba(255, 255, 255, 0.95);
-            text-decoration: none;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.4);
-            transition: border-color 0.2s;
-        }
-
-        .info a:hover {
-            border-bottom-color: rgba(255, 255, 255, 0.9);
+        .subtitle a:hover {
+            text-decoration-color: rgba(255, 255, 255, 0.9);
         }
 
         .search-box {
@@ -210,11 +203,7 @@
     <div class="container">
         <div class="header">
             <h1>find bufo</h1>
-            <p class="subtitle">semantic search for <a href="https://bufo.zone" target="_blank" style="color: inherit; text-decoration: underline;">bufo.zone</a></p>
-            <p class="info">
-                <a href="https://turbopuffer.com/docs/hybrid-search" target="_blank">multimodal hybrid search</a> ·
-                <a href="https://git.tangled.sh/zzstoatzz.io/find-bufo" target="_blank">source</a>
-            </p>
+            <p class="subtitle"><a href="https://git.tangled.sh/zzstoatzz.io/find-bufo/src/branch/main/src/search.rs" target="_blank">semantic search</a> for <a href="https://bufo.zone" target="_blank">bufo.zone</a></p>
         </div>
 
         <div class="search-box">

@@ -1,3 +1,26 @@
+//! multimodal semantic search using early fusion embeddings
+//!
+//! this implementation uses voyage AI's multimodal-3 model which employs a
+//! unified transformer encoder for early fusion of text and image modalities.
+//!
+//! ## approach
+//!
+//! - filename text (e.g., "bufo-jumping-on-bed" → "bufo jumping on bed") is combined
+//!   with image content in a single embedding request
+//! - the unified encoder processes both modalities together, creating a single 1024-dim
+//!   vector that captures semantic meaning from both text and visual features
+//! - vector search against turbopuffer using cosine distance similarity
+//!
+//! ## research backing
+//!
+//! voyage AI's multimodal-3 demonstrates 41.44% improvement on table/figure retrieval
+//! tasks when combining text + images vs images alone, validating the early fusion approach.
+//!
+//! references:
+//! - voyage multimodal embeddings: https://docs.voyageai.com/docs/multimodal-embeddings
+//! - early fusion methodology: text and images are combined in the embedding generation
+//!   phase rather than fusing separate embeddings (late fusion)
+
 use crate::config::Config;
 use crate::embedding::EmbeddingClient;
 use crate::turbopuffer::{QueryRequest, TurbopufferClient};
