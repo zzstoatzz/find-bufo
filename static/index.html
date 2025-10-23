@@ -202,29 +202,62 @@
             padding: 40px;
         }
 
+        @keyframes peek-in-out {
+            0% {
+                transform: var(--peek-start);
+            }
+            20% {
+                transform: var(--peek-in);
+            }
+            80% {
+                transform: var(--peek-in);
+            }
+            100% {
+                transform: var(--peek-start);
+            }
+        }
+
         .peeking-bufo {
             position: fixed;
             pointer-events: none;
             z-index: 1000;
-            top: 50%;
             width: 200px;
             height: auto;
-            transition: opacity 0.3s ease-out;
+            animation: peek-in-out 6s ease-in-out infinite;
         }
 
         .peeking-bufo.hidden {
             opacity: 0;
             pointer-events: none;
+            animation: none;
         }
 
         .peeking-bufo-right {
-            right: 0;
-            transform: translateY(-50%);
+            right: -200px;
+            top: 50%;
+            --peek-start: translateY(-50%);
+            --peek-in: translateX(-200px) translateY(-50%);
+        }
+
+        .peeking-bufo-bottom {
+            bottom: -200px;
+            left: 50%;
+            --peek-start: translateX(-50%) rotate(90deg);
+            --peek-in: translateX(-50%) translateY(-200px) rotate(90deg);
         }
 
         .peeking-bufo-left {
-            left: 0;
-            transform: translateY(-50%) scaleX(-1);
+            left: -200px;
+            top: 50%;
+            --peek-start: translateY(-50%) scaleX(-1);
+            --peek-in: translateX(200px) translateY(-50%) scaleX(-1);
+        }
+
+        .peeking-bufo-top {
+            top: -200px;
+            left: 50%;
+            --peek-start: translateX(-50%) rotate(-90deg);
+            --peek-in: translateX(-50%) translateY(200px) rotate(-90deg);
         }
 
         @media (max-width: 1024px) {
@@ -266,20 +299,13 @@
 
     <img src="https://all-the.bufo.zone/bufo-just-checking.gif" alt="bufo peeking" class="peeking-bufo" id="peekingBufo">
 
+    <script src="/static/bufo-peek.js"></script>
     <script>
         const searchInput = document.getElementById('searchInput');
         const searchButton = document.getElementById('searchButton');
         const resultsDiv = document.getElementById('results');
         const loadingDiv = document.getElementById('loading');
         const errorDiv = document.getElementById('error');
-        const peekingBufo = document.getElementById('peekingBufo');
-
-        // randomly position bufo on left or right
-        if (Math.random() < 0.5) {
-            peekingBufo.classList.add('peeking-bufo-left');
-        } else {
-            peekingBufo.classList.add('peeking-bufo-right');
-        }
 
         let hasSearched = false;
 
@@ -289,7 +315,7 @@
 
             // hide bufo after first search
             if (!hasSearched) {
-                peekingBufo.classList.add('hidden');
+                window.dispatchEvent(new Event('bufo-hide'));
                 hasSearched = true;
             }
 
