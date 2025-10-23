@@ -24,8 +24,10 @@
 use crate::config::Config;
 use crate::embedding::EmbeddingClient;
 use crate::turbopuffer::{QueryRequest, TurbopufferClient};
-use actix_web::{web, HttpResponse, Result as ActixResult};
+use actix_web::{web, HttpRequest, HttpResponse, Result as ActixResult};
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
@@ -51,12 +53,20 @@ pub struct BufoResult {
     pub score: f32, // normalized 0-1 score for display
 }
 
-pub async fn search(
-    query: web::Json<SearchQuery>,
-    config: web::Data<Config>,
-) -> ActixResult<HttpResponse> {
-    let query_text = query.query.clone();
-    let top_k_val = query.top_k;
+/// generate etag for caching based on query parameters
+fn generate_etag(query: &str, top_k: usize) -> String {
+    let mut hasher = DefaultHasher::new();
+    query.hash(&mut hasher);
+    top_k.hash(&mut hasher);
+    format!("\"{}\"", hasher.finish())
+}
+
+/// shared search implementation used by both POST and GET handlers
+async fn perform_search(
+    query_text: String,
+    top_k_val: usize,
+    config: &Config,
+) -> ActixResult<SearchResponse> {
 
     let _search_span = logfire::span!(
         "bufo_search",
@@ -113,7 +123,7 @@ pub async fn search(
             serde_json::json!("ANN"),
             serde_json::json!(query_embedding),
         ],
-        top_k: query.top_k,
+        top_k: top_k_val,
         include_attributes: Some(vec!["url".to_string(), "name".to_string(), "filename".to_string()]),
     };
 
@@ -203,5 +213,40 @@ pub async fn search(
         avg_score = avg_score_val
     );
 
-    Ok(HttpResponse::Ok().json(SearchResponse { results }))
+    Ok(SearchResponse { results })
+}
+
+/// POST /api/search handler (existing API)
+pub async fn search(
+    query: web::Json<SearchQuery>,
+    config: web::Data<Config>,
+) -> ActixResult<HttpResponse> {
+    let response = perform_search(query.query.clone(), query.top_k, &config).await?;
+    Ok(HttpResponse::Ok().json(response))
+}
+
+/// GET /api/search handler for shareable URLs
+pub async fn search_get(
+    query: web::Query<SearchQuery>,
+    config: web::Data<Config>,
+    req: HttpRequest,
+) -> ActixResult<HttpResponse> {
+    // generate etag for caching
+    let etag = generate_etag(&query.query, query.top_k);
+
+    // check if client has cached version
+    if let Some(if_none_match) = req.headers().get("if-none-match") {
+        if if_none_match.to_str().unwrap_or("") == etag {
+            return Ok(HttpResponse::NotModified()
+                .insert_header(("etag", etag))
+                .finish());
+        }
+    }
+
+    let response = perform_search(query.query.clone(), query.top_k, &config).await?;
+
+    Ok(HttpResponse::Ok()
+        .insert_header(("etag", etag.clone()))
+        .insert_header(("cache-control", "public, max-age=300")) // cache for 5 minutes
+        .json(response))
 }

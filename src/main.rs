@@ -62,6 +62,7 @@ async fn main() -> Result<()> {
                 web::scope("/api")
                     .wrap(Governor::new(&governor_conf))
                     .route("/search", web::post().to(search::search))
+                    .route("/search", web::get().to(search::search_get))
                     .route("/health", web::get().to(|| async { HttpResponse::Ok().body("ok") }))
             )
             .service(fs::Files::new("/static", "./static").show_files_listing())

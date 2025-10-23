@@ -283,7 +283,7 @@
 
         let hasSearched = false;
 
-        async function search() {
+        async function search(updateUrl = true) {
             const query = searchInput.value.trim();
             if (!query) return;
 
@@ -293,18 +293,30 @@
                 hasSearched = true;
             }
 
+            // update url with query parameters for sharing
+            if (updateUrl) {
+                const params = new URLSearchParams();
+                params.set('q', query);
+                params.set('top_k', '20');
+                const newUrl = `${window.location.pathname}?${params.toString()}`;
+                window.history.pushState({ query }, '', newUrl);
+            }
+
             searchButton.disabled = true;
             loadingDiv.style.display = 'block';
             resultsDiv.innerHTML = '';
             errorDiv.style.display = 'none';
 
             try {
-                const response = await fetch('/api/search', {
-                    method: 'POST',
+                const params = new URLSearchParams();
+                params.set('query', query);
+                params.set('top_k', '20');
+
+                const response = await fetch(`/api/search?${params.toString()}`, {
+                    method: 'GET',
                     headers: {
-                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
                     },
-                    body: JSON.stringify({ query, top_k: 20 }),
                 });
 
                 if (!response.ok) {
@@ -343,9 +355,27 @@
             });
         }
 
-        searchButton.addEventListener('click', search);
+        searchButton.addEventListener('click', () => search(true));
         searchInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') search();
+            if (e.key === 'Enter') search(true);
+        });
+
+        // handle browser back/forward
+        window.addEventListener('popstate', (e) => {
+            if (e.state && e.state.query) {
+                searchInput.value = e.state.query;
+                search(false);
+            }
+        });
+
+        // auto-execute search if url has query params (for shared links)
+        window.addEventListener('DOMContentLoaded', () => {
+            const params = new URLSearchParams(window.location.search);
+            const query = params.get('q');
+            if (query) {
+                searchInput.value = query;
+                search(false); // don't update URL since we're already loading from it
+            }
         });
     </script>
 </body>
