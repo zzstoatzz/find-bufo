@@ -55,18 +55,18 @@ pub async fn search(
     query: web::Json<SearchQuery>,
     config: web::Data<Config>,
 ) -> ActixResult<HttpResponse> {
-    let query_text = &query.query;
+    let query_text = query.query.clone();
     let top_k_val = query.top_k;
 
     let _search_span = logfire::span!(
         "bufo_search",
-        query = query_text,
+        query = &query_text,
         top_k = top_k_val as i64
-    );
+    ).entered();
 
     logfire::info!(
         "search request received",
-        query = query_text,
+        query = &query_text,
         top_k = top_k_val as i64
     );
 
@@ -80,18 +80,19 @@ pub async fn search(
     let query_embedding = {
         let _span = logfire::span!(
             "voyage.embed_text",
-            query = query_text,
+            query = &query_text,
             model = "voyage-3-lite"
-        );
+        ).entered();
+
         embedding_client
-            .embed_text(query_text)
+            .embed_text(&query_text)
             .await
             .map_err(|e| {
                 let error_msg = e.to_string();
                 logfire::error!(
                     "embedding generation failed",
                     error = error_msg,
-                    query = query_text
+                    query = &query_text
                 );
                 actix_web::error::ErrorInternalServerError(format!(
                     "failed to generate embedding: {}",
@@ -102,7 +103,7 @@ pub async fn search(
 
     logfire::info!(
         "embedding generated",
-        query = query_text,
+        query = &query_text,
         embedding_dim = query_embedding.len() as i64
     );
 
@@ -116,20 +117,21 @@ pub async fn search(
         include_attributes: Some(vec!["url".to_string(), "name".to_string(), "filename".to_string()]),
     };
 
-    let namespace = &config.turbopuffer_namespace;
+    let namespace = config.turbopuffer_namespace.clone();
     let vector_results = {
         let _span = logfire::span!(
             "turbopuffer.query",
-            query = query_text,
+            query = &query_text,
             top_k = top_k_val as i64,
-            namespace = namespace
-        );
+            namespace = &namespace
+        ).entered();
+
         tpuf_client.query(vector_request).await.map_err(|e| {
             let error_msg = e.to_string();
             logfire::error!(
                 "vector search failed",
                 error = error_msg,
-                query = query_text,
+                query = &query_text,
                 top_k = top_k_val as i64
             );
             actix_web::error::ErrorInternalServerError(format!(
@@ -145,7 +147,7 @@ pub async fn search(
 
     logfire::info!(
         "vector search completed",
-        query = query_text,
+        query = &query_text,
         results_found = results_found,
         min_dist = min_dist,
         max_dist = max_dist
@@ -194,7 +196,7 @@ pub async fn search(
 
     logfire::info!(
         "search completed successfully",
-        query = query_text,
+        query = &query_text,
         results_count = results_count,
         top_result = &top_result_name,
         top_score = top_score_val,
