@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 struct VoyageEmbeddingRequest {
     inputs: Vec<MultimodalInput>,
     model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -50,10 +52,8 @@ impl EmbeddingClient {
                 }],
             }],
             model: "voyage-multimodal-3".to_string(),
+            input_type: Some("query".to_string()),
         };
-
-        let json_body = serde_json::to_string(&request)?;
-        log::debug!("Sending request body: {}", json_body);
 
         let response = self
             .client
@@ -81,17 +81,6 @@ impl EmbeddingClient {
             .next()
             .map(|d| d.embedding)
             .context("no embedding returned")?;
-
-        log::debug!(
-            "Generated embedding for '{}': dimension={}, first 5 values=[{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
-            text,
-            embedding.len(),
-            embedding.get(0).unwrap_or(&0.0),
-            embedding.get(1).unwrap_or(&0.0),
-            embedding.get(2).unwrap_or(&0.0),
-            embedding.get(3).unwrap_or(&0.0),
-            embedding.get(4).unwrap_or(&0.0)
-        );
 
         Ok(embedding)
     }

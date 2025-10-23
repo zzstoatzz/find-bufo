@@ -36,13 +36,13 @@ a one-page application for searching through all the bufos from [bufo.zone](http
 to populate the vector store with bufos:
 
 ```bash
-uvx scripts/ingest_bufos.py
+just re-index
 ```
 
 this will:
 1. scrape all bufos from bufo.zone
 2. download them to `data/bufos/`
-3. generate embeddings for each image
+3. generate embeddings for each image with `input_type="document"`
 4. upload to turbopuffer
 
 ## development
@@ -63,7 +63,7 @@ deploy to fly.io:
 fly launch  # first time
 fly secrets set VOYAGE_API_TOKEN=your_token
 fly secrets set TURBOPUFFER_API_KEY=your_key
-fly deploy
+just deploy
 ```
 
 ## usage
@@ -75,7 +75,7 @@ fly deploy
 
 ## how it works
 
-1. **ingestion**: all bufo images are embedded using voyage ai's multimodal model
-2. **search**: user queries are embedded with the same model
+1. **ingestion**: all bufo images are embedded using voyage ai's multimodal-3 model with `input_type="document"` for optimized retrieval
+2. **search**: user queries are embedded with the same model using `input_type="query"` to align query and document embeddings
 3. **retrieval**: turbopuffer finds the most similar bufos using cosine distance
 4. **display**: results are shown with similarity scores

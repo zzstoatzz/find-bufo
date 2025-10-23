@@ -171,6 +171,7 @@ async def embed_image(client: httpx.AsyncClient, image_path: Path, api_key: str,
                 json={
                     "inputs": [{"content": content}],
                     "model": "voyage-multimodal-3",
+                    "input_type": "document",
                 },
                 timeout=60.0,
             )
