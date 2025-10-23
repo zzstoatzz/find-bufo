@@ -125,6 +125,16 @@ async def embed_image(client: httpx.AsyncClient, image_path: Path, api_key: str,
             # check if this is an animated image
             is_animated = hasattr(image, 'n_frames') and image.n_frames > 1
 
+            # extract semantic meaning from filename for early fusion
+            # convert "bufo-jumping-on-bed.png" -> "bufo jumping on bed"
+            filename_text = image_path.stem.replace("-", " ").replace("_", " ")
+
+            # start content array with filename text for early fusion
+            content = [{
+                "type": "text",
+                "text": filename_text
+            }]
+
             if is_animated:
                 # for animated GIFs, extract multiple keyframes for temporal representation
                 num_frames = image.n_frames
@@ -132,8 +142,7 @@ async def embed_image(client: httpx.AsyncClient, image_path: Path, api_key: str,
                 max_frames = min(5, num_frames)
                 frame_indices = [int(i * (num_frames - 1) / (max_frames - 1)) for i in range(max_frames)]
 
-                # extract each frame as base64 image
-                content = []
+                # add each frame to content array
                 for frame_idx in frame_indices:
                     image.seek(frame_idx)
                     buffered = BytesIO()
@@ -144,14 +153,14 @@ async def embed_image(client: httpx.AsyncClient, image_path: Path, api_key: str,
                         "image_base64": f"data:image/webp;base64,{img_base64}",
                     })
             else:
-                # for static images, just send the single image
+                # for static images, add single image to content array
                 buffered = BytesIO()
                 image.convert("RGB").save(buffered, format="WEBP", lossless=True)
                 img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-                content = [{
+                content.append({
                     "type": "image_base64",
                     "image_base64": f"data:image/webp;base64,{img_base64}",
-                }]
+                })
 
             response = await client.post(
                 "https://api.voyageai.com/v1/multimodalembeddings",

@@ -64,40 +64,4 @@ impl TurbopufferClient {
         serde_json::from_str(&body)
             .context(format!("failed to parse query response: {}", body))
     }
-
-    pub async fn bm25_query(&self, query_text: &str, top_k: usize) -> Result<QueryResponse> {
-        let url = format!(
-            "https://api.turbopuffer.com/v1/vectors/{}/query",
-            self.namespace
-        );
-
-        let request = serde_json::json!({
-            "rank_by": ["name", "BM25", query_text],
-            "top_k": top_k,
-            "include_attributes": ["url", "name", "filename"],
-        });
-
-        log::debug!("turbopuffer BM25 query request: {}", serde_json::to_string_pretty(&request)?);
-
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await
-            .context("failed to send BM25 query request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("turbopuffer BM25 query failed with status {}: {}", status, body);
-        }
-
-        let body = response.text().await.context("failed to read response body")?;
-        log::debug!("turbopuffer BM25 response: {}", body);
-
-        serde_json::from_str(&body)
-            .context(format!("failed to parse BM25 query response: {}", body))
-    }
 }

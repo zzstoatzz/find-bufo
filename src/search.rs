@@ -59,12 +59,12 @@ pub async fn search(
             serde_json::json!("ANN"),
             serde_json::json!(query_embedding),
         ],
-        top_k: query.top_k * 2, // get more results for fusion
+        top_k: query.top_k,
         include_attributes: Some(vec!["url".to_string(), "name".to_string(), "filename".to_string()]),
     };
 
     let vector_results = {
-        let _span = logfire::span!("vector_search", top_k = query.top_k * 2);
+        let _span = logfire::span!("vector_search", top_k = query.top_k);
         tpuf_client.query(vector_request).await.map_err(|e| {
             logfire::error!("vector search failed", error = e.to_string());
             actix_web::error::ErrorInternalServerError(format!(
@@ -74,85 +74,38 @@ pub async fn search(
         })?
     };
 
-    // run BM25 text search
-    let bm25_top_k = query.top_k * 2;
-    let bm25_results = {
-        let _span = logfire::span!("bm25_search", query = &query.query, top_k = bm25_top_k as i64);
-        tpuf_client.bm25_query(&query.query, bm25_top_k).await.map_err(|e| {
-            logfire::error!("bm25 search failed", error = e.to_string());
-            actix_web::error::ErrorInternalServerError(format!(
-                "failed to query turbopuffer (BM25): {}",
-                e
-            ))
-        })?
-    };
-
-    // combine results using Reciprocal Rank Fusion (RRF)
-    let _span = logfire::span!("reciprocal_rank_fusion",
-        vector_results = vector_results.len(),
-        bm25_results = bm25_results.len()
-    );
-
-    use std::collections::HashMap;
-    let mut rrf_scores: HashMap<String, f32> = HashMap::new();
-    let k = 60.0; // RRF constant
-
-    // Add vector search rankings
-    for (rank, row) in vector_results.iter().enumerate() {
-        let score = 1.0 / (k + (rank as f32) + 1.0);
-        *rrf_scores.entry(row.id.clone()).or_insert(0.0) += score;
-    }
-
-    // Add BM25 search rankings
-    for (rank, row) in bm25_results.iter().enumerate() {
-        let score = 1.0 / (k + (rank as f32) + 1.0);
-        *rrf_scores.entry(row.id.clone()).or_insert(0.0) += score;
-    }
-
-    // Collect all unique results
-    let mut all_results: HashMap<String, crate::turbopuffer::QueryRow> = HashMap::new();
-    for row in vector_results.into_iter().chain(bm25_results.into_iter()) {
-        all_results.entry(row.id.clone()).or_insert(row);
-    }
-
-    // Sort by RRF score and take top_k
-    let mut scored_results: Vec<(String, f32)> = rrf_scores.into_iter().collect();
-    scored_results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-    scored_results.truncate(query.top_k);
-
-    // Scale RRF scores to 0-1 range
-    // RRF scores typically range from ~0.016 (single match, low rank) to ~0.033 (dual match, high rank)
-    // Scale by 25x to map good matches near 1.0, poor matches stay low
-    let results: Vec<BufoResult> = scored_results
+    // convert vector search results to bufo results
+    // turbopuffer returns cosine distance (0 = identical, 2 = opposite)
+    // convert to similarity score: 1 - (distance / 2) to get 0-1 range
+    let results: Vec<BufoResult> = vector_results
         .into_iter()
-        .filter_map(|(id, rrf_score)| {
-            all_results.get(&id).map(|row| {
-                let url = row
-                    .attributes
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+        .map(|row| {
+            let url = row
+                .attributes
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
-                let name = row
-                    .attributes
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&row.id)
-                    .to_string();
+            let name = row
+                .attributes
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&row.id)
+                .to_string();
 
-                // Scale and clamp RRF score to 0-1 range
-                // Good matches (appearing high in both searches) will approach 1.0
-                // Weak matches will naturally be lower
-                let scaled_score = (rrf_score * 25.0).min(1.0);
+            // convert cosine distance to similarity score
+            // turbopuffer's dist field contains the cosine distance
+            // for now, use a placeholder score based on rank
+            // TODO: extract actual distance from turbopuffer response
+            let score = 1.0; // placeholder - turbopuffer doesn't return dist in current response
 
-                BufoResult {
-                    id: row.id.clone(),
-                    url,
-                    name,
-                    score: scaled_score,
-                }
-            })
+            BufoResult {
+                id: row.id.clone(),
+                url,
+                name,
+                score,
+            }
         })
         .collect();
 
