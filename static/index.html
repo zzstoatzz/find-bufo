@@ -79,33 +79,86 @@
             margin-bottom: 20px;
         }
 
-        .sample-queries {
-            display: flex;
-            gap: 10px;
-            justify-content: center;
+        .sample-queries-container {
+            text-align: center;
             margin-bottom: 30px;
         }
 
-        .sample-queries.hidden {
+        .sample-queries-container.hidden {
             display: none;
         }
 
+        .sample-queries-label {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 0.85em;
+            margin-bottom: 10px;
+            font-weight: 500;
+        }
+
+        .sample-queries {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
         .sample-query-btn {
-            padding: 10px 20px;
-            background: white;
-            color: #667eea;
-            border: 2px solid #667eea;
-            border-radius: 8px;
-            font-size: 14px;
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(10px);
+            border: 1.5px solid rgba(255, 255, 255, 0.3);
+            border-radius: 6px;
+            font-size: 0.85em;
             font-family: inherit;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
+            color: white;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.2);
         }
 
-        .sample-query-btn:hover {
-            background: #667eea;
-            color: white;
+        .sample-query-btn.happy {
+            background: rgba(255, 220, 100, 0.25);
+            border-color: rgba(255, 220, 100, 0.4);
+        }
+
+        .sample-query-btn.happy:hover {
+            background: rgba(255, 220, 100, 0.4);
+            border-color: rgba(255, 220, 100, 0.6);
+            transform: translateY(-2px);
+        }
+
+        .sample-query-btn.apocalyptic {
+            background: rgba(255, 80, 80, 0.25);
+            border-color: rgba(255, 80, 80, 0.4);
+        }
+
+        .sample-query-btn.apocalyptic:hover {
+            background: rgba(255, 80, 80, 0.4);
+            border-color: rgba(255, 80, 80, 0.6);
+            transform: translateY(-2px);
+        }
+
+        .sample-query-btn.giving {
+            background: rgba(100, 220, 150, 0.25);
+            border-color: rgba(100, 220, 150, 0.4);
+        }
+
+        .sample-query-btn.giving:hover {
+            background: rgba(100, 220, 150, 0.4);
+            border-color: rgba(100, 220, 150, 0.6);
+            transform: translateY(-2px);
+        }
+
+        @media (max-width: 600px) {
+            .sample-query-btn {
+                font-size: 0.8em;
+                padding: 6px 12px;
+            }
+
+            .sample-queries {
+                gap: 6px;
+            }
         }
 
         .search-input-wrapper {
@@ -332,10 +385,13 @@
             </div>
         </div>
 
-        <div id="sampleQueries" class="sample-queries">
-            <button class="sample-query-btn" data-query="happy">happy</button>
-            <button class="sample-query-btn" data-query="apocalyptic">apocalyptic</button>
-            <button class="sample-query-btn" data-query="in a giving mood">in a giving mood</button>
+        <div id="sampleQueriesContainer" class="sample-queries-container">
+            <div class="sample-queries-label">try a sample query:</div>
+            <div class="sample-queries">
+                <button class="sample-query-btn happy" data-query="happy">happy</button>
+                <button class="sample-query-btn apocalyptic" data-query="apocalyptic">apocalyptic</button>
+                <button class="sample-query-btn giving" data-query="in a giving mood">in a giving mood</button>
+            </div>
         </div>
 
         <div id="error" class="error" style="display: none;"></div>
@@ -352,7 +408,7 @@
         const resultsDiv = document.getElementById('results');
         const loadingDiv = document.getElementById('loading');
         const errorDiv = document.getElementById('error');
-        const sampleQueriesDiv = document.getElementById('sampleQueries');
+        const sampleQueriesContainer = document.getElementById('sampleQueriesContainer');
 
         let hasSearched = false;
 
@@ -379,7 +435,7 @@
             loadingDiv.style.display = 'block';
             resultsDiv.innerHTML = '';
             errorDiv.style.display = 'none';
-            sampleQueriesDiv.classList.add('hidden');
+            sampleQueriesContainer.classList.add('hidden');
 
             try {
                 const params = new URLSearchParams();
