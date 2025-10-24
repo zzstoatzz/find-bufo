@@ -76,7 +76,36 @@
             border-radius: 12px;
             padding: 20px;
             box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+
+        .sample-queries {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
             margin-bottom: 30px;
+        }
+
+        .sample-queries.hidden {
+            display: none;
+        }
+
+        .sample-query-btn {
+            padding: 10px 20px;
+            background: white;
+            color: #667eea;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .sample-query-btn:hover {
+            background: #667eea;
+            color: white;
         }
 
         .search-input-wrapper {
@@ -303,6 +332,12 @@
             </div>
         </div>
 
+        <div id="sampleQueries" class="sample-queries">
+            <button class="sample-query-btn" data-query="happy">happy</button>
+            <button class="sample-query-btn" data-query="sad">sad</button>
+            <button class="sample-query-btn" data-query="generous">generous</button>
+        </div>
+
         <div id="error" class="error" style="display: none;"></div>
         <div id="loading" class="loading" style="display: none;">searching...</div>
         <div id="results" class="results"></div>
@@ -317,6 +352,7 @@
         const resultsDiv = document.getElementById('results');
         const loadingDiv = document.getElementById('loading');
         const errorDiv = document.getElementById('error');
+        const sampleQueriesDiv = document.getElementById('sampleQueries');
 
         let hasSearched = false;
 
@@ -343,6 +379,7 @@
             loadingDiv.style.display = 'block';
             resultsDiv.innerHTML = '';
             errorDiv.style.display = 'none';
+            sampleQueriesDiv.classList.add('hidden');
 
             try {
                 const params = new URLSearchParams();
@@ -413,6 +450,15 @@
                 searchInput.value = query;
                 search(false); // don't update URL since we're already loading from it
             }
+        });
+
+        // handle sample query button clicks
+        document.querySelectorAll('.sample-query-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const query = btn.getAttribute('data-query');
+                searchInput.value = query;
+                search(true);
+            });
         });
     </script>
 </body>
