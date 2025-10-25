@@ -79,6 +79,97 @@
             margin-bottom: 20px;
         }
 
+        .search-options {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .search-options.collapsed {
+            display: none;
+        }
+
+        .options-toggle {
+            background: none;
+            border: none;
+            color: #667eea;
+            font-size: 0.9em;
+            font-family: inherit;
+            cursor: pointer;
+            padding: 5px 0;
+            text-decoration: underline;
+            margin-top: 10px;
+        }
+
+        .options-toggle:hover {
+            color: #5568d3;
+        }
+
+        .option-group {
+            margin-bottom: 15px;
+        }
+
+        .option-label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 0.9em;
+            color: #555;
+        }
+
+        .option-name {
+            font-weight: 600;
+        }
+
+        .option-value {
+            color: #667eea;
+            font-weight: 700;
+        }
+
+        .option-description {
+            font-size: 0.8em;
+            color: #888;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #e0e0e0;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+            border: none;
+        }
+
+        .alpha-markers {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75em;
+            color: #aaa;
+            margin-top: 4px;
+        }
+
         .sample-queries-container {
             text-align: center;
             margin-bottom: 30px;
@@ -383,6 +474,33 @@
                 >
                 <button id="searchButton">search</button>
             </div>
+
+            <button class="options-toggle" id="optionsToggle">search options</button>
+
+            <div class="search-options collapsed" id="searchOptions">
+                <div class="option-group">
+                    <div class="option-label">
+                        <span class="option-name">search mode (alpha)</span>
+                        <span class="option-value" id="alphaValue">0.7</span>
+                    </div>
+                    <div class="option-description">
+                        balance between semantic understanding and exact keyword matching
+                    </div>
+                    <input
+                        type="range"
+                        id="alphaSlider"
+                        min="0"
+                        max="1"
+                        step="0.1"
+                        value="0.7"
+                    >
+                    <div class="alpha-markers">
+                        <span>keyword</span>
+                        <span>balanced</span>
+                        <span>semantic</span>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div id="sampleQueriesContainer" class="sample-queries-container">
@@ -409,12 +527,31 @@
         const loadingDiv = document.getElementById('loading');
         const errorDiv = document.getElementById('error');
         const sampleQueriesContainer = document.getElementById('sampleQueriesContainer');
+        const optionsToggle = document.getElementById('optionsToggle');
+        const searchOptions = document.getElementById('searchOptions');
+        const alphaSlider = document.getElementById('alphaSlider');
+        const alphaValue = document.getElementById('alphaValue');
 
         let hasSearched = false;
+
+        // toggle search options
+        optionsToggle.addEventListener('click', () => {
+            searchOptions.classList.toggle('collapsed');
+            optionsToggle.textContent = searchOptions.classList.contains('collapsed')
+                ? 'search options'
+                : 'hide options';
+        });
+
+        // update alpha value display
+        alphaSlider.addEventListener('input', (e) => {
+            alphaValue.textContent = e.target.value;
+        });
 
         async function search(updateUrl = true) {
             const query = searchInput.value.trim();
             if (!query) return;
+
+            const alpha = parseFloat(alphaSlider.value);
 
             // hide bufo after first search
             if (!hasSearched) {
@@ -427,8 +564,9 @@
                 const params = new URLSearchParams();
                 params.set('q', query);
                 params.set('top_k', '20');
+                params.set('alpha', alpha.toString());
                 const newUrl = `${window.location.pathname}?${params.toString()}`;
-                window.history.pushState({ query }, '', newUrl);
+                window.history.pushState({ query, alpha }, '', newUrl);
             }
 
             searchButton.disabled = true;
@@ -441,6 +579,7 @@
                 const params = new URLSearchParams();
                 params.set('query', query);
                 params.set('top_k', '20');
+                params.set('alpha', alpha.toString());
 
                 const response = await fetch(`/api/search?${params.toString()}`, {
                     method: 'GET',
@@ -494,6 +633,10 @@
         window.addEventListener('popstate', (e) => {
             if (e.state && e.state.query) {
                 searchInput.value = e.state.query;
+                if (e.state.alpha !== undefined) {
+                    alphaSlider.value = e.state.alpha;
+                    alphaValue.textContent = e.state.alpha;
+                }
                 search(false);
             }
         });
@@ -502,6 +645,13 @@
         window.addEventListener('DOMContentLoaded', () => {
             const params = new URLSearchParams(window.location.search);
             const query = params.get('q');
+            const alpha = params.get('alpha');
+
+            if (alpha) {
+                alphaSlider.value = alpha;
+                alphaValue.textContent = alpha;
+            }
+
             if (query) {
                 searchInput.value = query;
                 search(false); // don't update URL since we're already loading from it

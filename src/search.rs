@@ -1,25 +1,44 @@
-//! multimodal semantic search using early fusion embeddings
+//! hybrid search combining semantic embeddings with keyword matching
 //!
-//! this implementation uses voyage AI's multimodal-3 model which employs a
-//! unified transformer encoder for early fusion of text and image modalities.
+//! this implementation uses weighted fusion to balance semantic understanding with exact matches.
 //!
-//! ## approach
+//! ## search components
 //!
-//! - filename text (e.g., "bufo-jumping-on-bed" → "bufo jumping on bed") is combined
-//!   with image content in a single embedding request
-//! - the unified encoder processes both modalities together, creating a single 1024-dim
-//!   vector that captures semantic meaning from both text and visual features
-//! - vector search against turbopuffer using cosine distance similarity
+//! ### 1. semantic search (vector/ANN)
+//! - voyage AI multimodal-3 embeddings via early fusion:
+//!   - filename text (e.g., "bufo-jumping-on-bed" → "bufo jumping on bed") + image content
+//!   - unified transformer encoder creates 1024-dim vectors
+//!   - cosine distance similarity against turbopuffer
+//! - **strength**: finds semantically related bufos (e.g., "happy" → excited, smiling bufos)
+//! - **weakness**: may miss exact filename matches (e.g., "happy" might not surface "bufo-is-happy")
 //!
-//! ## research backing
+//! ### 2. keyword search (BM25)
+//! - full-text search on bufo `name` field (filename without extension)
+//! - BM25 ranking: IDF-weighted term frequency with document length normalization
+//! - **strength**: excellent for exact/partial matches (e.g., "jumping" → "bufos-jumping-on-the-bed")
+//! - **weakness**: no semantic understanding (e.g., "happy" won't find "excited" or "smiling")
 //!
-//! voyage AI's multimodal-3 demonstrates 41.44% improvement on table/figure retrieval
-//! tasks when combining text + images vs images alone, validating the early fusion approach.
+//! ### 3. weighted fusion
+//! - formula: `score = α * semantic + (1-α) * keyword`
+//! - both scores normalized to 0-1 range before fusion
+//! - configurable `alpha` parameter (default 0.7):
+//!   - `α=1.0`: pure semantic (best for conceptual queries like "apocalyptic", "in a giving mood")
+//!   - `α=0.7`: default (70% semantic, 30% keyword - balances both strengths)
+//!   - `α=0.5`: balanced (equal weight to semantic and keyword signals)
+//!   - `α=0.0`: pure keyword (best for exact filename searches)
 //!
-//! references:
+//! ## empirical behavior
+//!
+//! query: "happy", top_k=3
+//! - α=1.0: ["proud-bufo-is-excited", "bufo-hehe", "bufo-excited"] (semantic similarity)
+//! - α=0.5: ["bufo-is-happy-youre-happy", ...] (exact match rises to top)
+//! - α=0.0: ["bufo-is-happy-youre-happy" (1.0), others (0.0)] (only exact matches score)
+//!
+//! ## references
+//!
 //! - voyage multimodal embeddings: https://docs.voyageai.com/docs/multimodal-embeddings
-//! - early fusion methodology: text and images are combined in the embedding generation
-//!   phase rather than fusing separate embeddings (late fusion)
+//! - turbopuffer BM25: https://turbopuffer.com/docs/fts
+//! - weighted fusion: standard approach in modern hybrid search systems (2024)
 
 use crate::config::Config;
 use crate::embedding::EmbeddingClient;
@@ -34,10 +53,18 @@ pub struct SearchQuery {
     pub query: String,
     #[serde(default = "default_top_k")]
     pub top_k: usize,
+    /// alpha parameter for weighted fusion (0.0 = pure keyword, 1.0 = pure semantic)
+    /// default 0.7 favors semantic search while still considering exact matches
+    #[serde(default = "default_alpha")]
+    pub alpha: f32,
 }
 
 fn default_top_k() -> usize {
     10
+}
+
+fn default_alpha() -> f32 {
+    0.7
 }
 
 #[derive(Debug, Serialize)]
@@ -54,10 +81,12 @@ pub struct BufoResult {
 }
 
 /// generate etag for caching based on query parameters
-fn generate_etag(query: &str, top_k: usize) -> String {
+fn generate_etag(query: &str, top_k: usize, alpha: f32) -> String {
     let mut hasher = DefaultHasher::new();
     query.hash(&mut hasher);
     top_k.hash(&mut hasher);
+    // convert f32 to bits for consistent hashing
+    alpha.to_bits().hash(&mut hasher);
     format!("\"{}\"", hasher.finish())
 }
 
@@ -65,19 +94,22 @@ fn generate_etag(query: &str, top_k: usize) -> String {
 async fn perform_search(
     query_text: String,
     top_k_val: usize,
+    alpha: f32,
     config: &Config,
 ) -> ActixResult<SearchResponse> {
 
     let _search_span = logfire::span!(
         "bufo_search",
         query = &query_text,
-        top_k = top_k_val as i64
+        top_k = top_k_val as i64,
+        alpha = alpha as f64
     ).entered();
 
     logfire::info!(
         "search request received",
         query = &query_text,
-        top_k = top_k_val as i64
+        top_k = top_k_val as i64,
+        alpha = alpha as f64
     );
 
     let embedding_client = EmbeddingClient::new(config.voyage_api_key.clone());
@@ -117,22 +149,24 @@ async fn perform_search(
         embedding_dim = query_embedding.len() as i64
     );
 
+    // run vector search (semantic)
+    let search_top_k = top_k_val * 2; // get more results for better fusion
     let vector_request = QueryRequest {
         rank_by: vec![
             serde_json::json!("vector"),
             serde_json::json!("ANN"),
             serde_json::json!(query_embedding),
         ],
-        top_k: top_k_val,
+        top_k: search_top_k,
         include_attributes: Some(vec!["url".to_string(), "name".to_string(), "filename".to_string()]),
     };
 
     let namespace = config.turbopuffer_namespace.clone();
     let vector_results = {
         let _span = logfire::span!(
-            "turbopuffer.query",
+            "turbopuffer.vector_search",
             query = &query_text,
-            top_k = top_k_val as i64,
+            top_k = search_top_k as i64,
             namespace = &namespace
         ).entered();
 
@@ -142,7 +176,7 @@ async fn perform_search(
                 "vector search failed",
                 error = error_msg,
                 query = &query_text,
-                top_k = top_k_val as i64
+                top_k = search_top_k as i64
             );
             actix_web::error::ErrorInternalServerError(format!(
                 "failed to query turbopuffer (vector): {}",
@@ -151,47 +185,121 @@ async fn perform_search(
         })?
     };
 
-    let min_dist = vector_results.iter().map(|r| r.dist).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0) as f64;
-    let max_dist = vector_results.iter().map(|r| r.dist).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0) as f64;
-    let results_found = vector_results.len() as i64;
-
     logfire::info!(
         "vector search completed",
         query = &query_text,
-        results_found = results_found,
-        min_dist = min_dist,
-        max_dist = max_dist
+        results_found = vector_results.len() as i64
     );
 
-    // convert vector search results to bufo results
-    // turbopuffer returns cosine distance (0 = identical, 2 = opposite)
-    // convert to similarity score: 1 - (distance / 2) to get 0-1 range
-    let results: Vec<BufoResult> = vector_results
+    // run BM25 text search (keyword)
+    let bm25_results = {
+        let _span = logfire::span!(
+            "turbopuffer.bm25_search",
+            query = &query_text,
+            top_k = search_top_k as i64,
+            namespace = &namespace
+        ).entered();
+
+        tpuf_client.bm25_query(&query_text, search_top_k).await.map_err(|e| {
+            let error_msg = e.to_string();
+            logfire::error!(
+                "bm25 search failed",
+                error = error_msg,
+                query = &query_text,
+                top_k = search_top_k as i64
+            );
+            actix_web::error::ErrorInternalServerError(format!(
+                "failed to query turbopuffer (BM25): {}",
+                e
+            ))
+        })?
+    };
+
+    // weighted fusion: combine vector and BM25 results
+    use std::collections::HashMap;
+
+    // normalize vector scores (cosine distance -> 0-1 similarity)
+    let mut semantic_scores: HashMap<String, f32> = HashMap::new();
+    for row in &vector_results {
+        let score = 1.0 - (row.dist / 2.0);
+        semantic_scores.insert(row.id.clone(), score);
+    }
+
+    // normalize BM25 scores using max normalization (BM25-max-scaled approach)
+    // this preserves relative spacing and handles edge cases (single result, similar scores)
+    // reference: https://opensourceconnections.com/blog/2023/02/27/hybrid-vigor-winning-at-hybrid-search/
+    let bm25_scores_vec: Vec<f32> = bm25_results.iter().map(|r| r.dist).collect();
+    let max_bm25 = bm25_scores_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max).max(0.001); // avoid division by zero
+
+    let mut keyword_scores: HashMap<String, f32> = HashMap::new();
+    for row in &bm25_results {
+        // divide by max to ensure top result gets 1.0, others scale proportionally
+        let normalized_score = (row.dist / max_bm25).min(1.0);
+        keyword_scores.insert(row.id.clone(), normalized_score);
+    }
+
+    logfire::info!(
+        "bm25 search completed",
+        query = &query_text,
+        results_found = bm25_results.len() as i64,
+        max_bm25 = max_bm25 as f64,
+        top_bm25_raw = bm25_scores_vec.first().copied().unwrap_or(0.0) as f64,
+        top_bm25_normalized = keyword_scores.values().cloned().fold(f32::NEG_INFINITY, f32::max) as f64
+    );
+
+    // collect all unique results and compute weighted fusion scores
+    let mut all_results: HashMap<String, crate::turbopuffer::QueryRow> = HashMap::new();
+    for row in vector_results.into_iter().chain(bm25_results.into_iter()) {
+        all_results.entry(row.id.clone()).or_insert(row);
+    }
+
+    let mut fused_scores: Vec<(String, f32)> = all_results
+        .keys()
+        .map(|id| {
+            let semantic = semantic_scores.get(id).copied().unwrap_or(0.0);
+            let keyword = keyword_scores.get(id).copied().unwrap_or(0.0);
+            let fused = alpha * semantic + (1.0 - alpha) * keyword;
+            (id.clone(), fused)
+        })
+        .collect();
+
+    // sort by fused score (descending) and take top_k
+    fused_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    fused_scores.truncate(top_k_val);
+
+    logfire::info!(
+        "weighted fusion completed",
+        total_candidates = all_results.len() as i64,
+        alpha = alpha as f64,
+        final_results = fused_scores.len() as i64
+    );
+
+    // convert to bufo results
+    let results: Vec<BufoResult> = fused_scores
         .into_iter()
-        .map(|row| {
-            let url = row
-                .attributes
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+        .filter_map(|(id, score)| {
+            all_results.get(&id).map(|row| {
+                let url = row
+                    .attributes
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
 
-            let name = row
-                .attributes
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or(&row.id)
-                .to_string();
+                let name = row
+                    .attributes
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&row.id)
+                    .to_string();
 
-            // convert cosine distance to similarity score (0-1 range)
-            let score = 1.0 - (row.dist / 2.0);
-
-            BufoResult {
-                id: row.id.clone(),
-                url,
-                name,
-                score,
-            }
+                BufoResult {
+                    id: row.id.clone(),
+                    url,
+                    name,
+                    score,
+                }
+            })
         })
         .collect();
 
@@ -221,7 +329,7 @@ pub async fn search(
     query: web::Json<SearchQuery>,
     config: web::Data<Config>,
 ) -> ActixResult<HttpResponse> {
-    let response = perform_search(query.query.clone(), query.top_k, &config).await?;
+    let response = perform_search(query.query.clone(), query.top_k, query.alpha, &config).await?;
     Ok(HttpResponse::Ok().json(response))
 }
 
@@ -232,7 +340,7 @@ pub async fn search_get(
     req: HttpRequest,
 ) -> ActixResult<HttpResponse> {
     // generate etag for caching
-    let etag = generate_etag(&query.query, query.top_k);
+    let etag = generate_etag(&query.query, query.top_k, query.alpha);
 
     // check if client has cached version
     if let Some(if_none_match) = req.headers().get("if-none-match") {
@@ -243,7 +351,7 @@ pub async fn search_get(
         }
     }
 
-    let response = perform_search(query.query.clone(), query.top_k, &config).await?;
+    let response = perform_search(query.query.clone(), query.top_k, query.alpha, &config).await?;
 
     Ok(HttpResponse::Ok()
         .insert_header(("etag", etag.clone()))

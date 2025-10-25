@@ -1,12 +1,14 @@
 # find-bufo
 
-semantic search for the bufo zone
+hybrid semantic + keyword search for the bufo zone
 
 **live at: [find-bufo.fly.dev](https://find-bufo.fly.dev/)**
 
 ## overview
 
-a one-page application for searching through all the bufos from [bufo.zone](https://bufo.zone/) using multi-modal embeddings and vector search.
+a one-page application for searching through all the bufos from [bufo.zone](https://bufo.zone/) using hybrid search that combines:
+- **semantic search** via multimodal embeddings (understands meaning and visual content)
+- **keyword search** via BM25 full-text search (finds exact filename matches)
 
 ## architecture
 
@@ -70,12 +72,40 @@ just deploy
 
 1. open the app
 2. enter a search query describing the bufo you want
-3. see the top matching bufos with similarity scores
+3. see the top matching bufos with hybrid similarity scores
 4. click any bufo to open it in a new tab
+
+### api parameters
+
+the search API supports these parameters:
+- `query`: search text (required)
+- `top_k`: number of results (default: 10)
+- `alpha`: fusion weight (default: 0.7)
+  - `1.0` = pure semantic (best for conceptual queries like "happy", "apocalyptic")
+  - `0.7` = default (balances semantic understanding with exact matches)
+  - `0.5` = balanced (equal weight to both signals)
+  - `0.0` = pure keyword (best for exact filename searches)
+
+example: `/api/search?query=jumping&top_k=5&alpha=0.5`
 
 ## how it works
 
-1. **ingestion**: all bufo images are embedded using voyage ai's multimodal-3 model with `input_type="document"` for optimized retrieval
-2. **search**: user queries are embedded with the same model using `input_type="query"` to align query and document embeddings
-3. **retrieval**: turbopuffer finds the most similar bufos using cosine distance
-4. **display**: results are shown with similarity scores
+### ingestion
+all bufo images are processed through early fusion multimodal embeddings:
+1. filename text extracted (e.g., "bufo-jumping-on-bed" → "bufo jumping on bed")
+2. combined with image content in single embedding request
+3. voyage-multimodal-3 creates 1024-dim vectors capturing both text and visual features
+4. uploaded to turbopuffer with BM25-enabled `name` field for keyword search
+
+### search
+1. **semantic branch**: query embedded using voyage-multimodal-3 with `input_type="query"`
+2. **keyword branch**: BM25 full-text search against bufo names
+3. **fusion**: weighted combination using `alpha` parameter
+   - `score = α * semantic + (1-α) * keyword`
+   - both scores normalized to 0-1 range before fusion
+4. **ranking**: results sorted by fused score, top_k returned
+
+### why hybrid?
+- semantic alone: misses exact filename matches (e.g., "happy" might not find "bufo-is-happy")
+- keyword alone: no semantic understanding (e.g., "happy" won't find "excited" or "smiling")
+- hybrid: gets the best of both worlds
