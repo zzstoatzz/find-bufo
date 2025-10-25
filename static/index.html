@@ -90,19 +90,31 @@
         }
 
         .options-toggle {
-            background: none;
-            border: none;
+            background: rgba(102, 126, 234, 0.1);
+            border: 1.5px solid rgba(102, 126, 234, 0.3);
+            border-radius: 6px;
             color: #667eea;
-            font-size: 0.9em;
+            font-size: 0.85em;
             font-family: inherit;
+            font-weight: 600;
             cursor: pointer;
-            padding: 5px 0;
-            text-decoration: underline;
+            padding: 8px 14px;
             margin-top: 10px;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
         }
 
         .options-toggle:hover {
-            color: #5568d3;
+            background: rgba(102, 126, 234, 0.15);
+            border-color: rgba(102, 126, 234, 0.5);
+            transform: translateY(-1px);
+        }
+
+        .options-toggle svg {
+            width: 14px;
+            height: 14px;
         }
 
         .option-group {
@@ -122,9 +134,22 @@
             font-weight: 600;
         }
 
+        .option-name a {
+            text-decoration: none;
+            color: inherit;
+            border-bottom: 1px dotted #999;
+            transition: border-color 0.2s, color 0.2s;
+        }
+
+        .option-name a:hover {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+
         .option-value {
             color: #667eea;
             font-weight: 700;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
         }
 
         .option-description {
@@ -380,10 +405,40 @@
         }
 
         .no-results {
+            grid-column: 1 / -1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
             text-align: center;
+            padding: 40px 20px;
+            margin: 0 auto;
+        }
+
+        .no-results-text {
+            font-size: 3em;
+            margin-bottom: 50px;
+            font-weight: 700;
             color: white;
-            font-size: 1.2em;
-            padding: 40px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .no-results-bufo {
+            max-width: 600px;
+            width: 100%;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+        }
+
+        @media (max-width: 600px) {
+            .no-results-text {
+                font-size: 2em;
+            }
+
+            .no-results-bufo {
+                max-width: 300px;
+            }
         }
 
         @keyframes peek-in-out {
@@ -461,7 +516,7 @@
     <div class="container">
         <div class="header">
             <h1><a href="/">find bufo</a></h1>
-            <p class="subtitle"><a href="https://tangled.org/@zzstoatzz.io/find-bufo/blob/main/src/search.rs" target="_blank">semantic search</a> for <a href="https://bufo.zone" target="_blank">bufo.zone</a></p>
+            <p class="subtitle"><a href="https://tangled.org/@zzstoatzz.io/find-bufo/blob/main/src/search.rs#L1-L41" target="_blank">hybrid search</a> for <a href="https://bufo.zone" target="_blank">bufo.zone</a></p>
         </div>
 
         <div class="search-box">
@@ -475,13 +530,23 @@
                 <button id="searchButton">search</button>
             </div>
 
-            <button class="options-toggle" id="optionsToggle">search options</button>
+            <button class="options-toggle" id="optionsToggle">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="4" y1="6" x2="20" y2="6"></line>
+                    <line x1="4" y1="12" x2="20" y2="12"></line>
+                    <line x1="4" y1="18" x2="20" y2="18"></line>
+                    <circle cx="7" cy="6" r="2" fill="currentColor"></circle>
+                    <circle cx="14" cy="12" r="2" fill="currentColor"></circle>
+                    <circle cx="17" cy="18" r="2" fill="currentColor"></circle>
+                </svg>
+                <span id="optionsToggleText">search filters</span>
+            </button>
 
             <div class="search-options collapsed" id="searchOptions">
                 <div class="option-group">
                     <div class="option-label">
-                        <span class="option-name">search mode (alpha)</span>
-                        <span class="option-value" id="alphaValue">0.7</span>
+                        <span class="option-name">search mode (<a href="https://tangled.org/@zzstoatzz.io/find-bufo/blob/main/src/search.rs#L22" target="_blank">α</a>)</span>
+                        <span class="option-value" id="alphaValue">0.70</span>
                     </div>
                     <div class="option-description">
                         balance between semantic understanding and exact keyword matching
@@ -491,7 +556,7 @@
                         id="alphaSlider"
                         min="0"
                         max="1"
-                        step="0.1"
+                        step="0.01"
                         value="0.7"
                     >
                     <div class="alpha-markers">
@@ -535,16 +600,17 @@
         let hasSearched = false;
 
         // toggle search options
+        const optionsToggleText = document.getElementById('optionsToggleText');
         optionsToggle.addEventListener('click', () => {
             searchOptions.classList.toggle('collapsed');
-            optionsToggle.textContent = searchOptions.classList.contains('collapsed')
-                ? 'search options'
-                : 'hide options';
+            optionsToggleText.textContent = searchOptions.classList.contains('collapsed')
+                ? 'search filters'
+                : 'hide filters';
         });
 
         // update alpha value display
         alphaSlider.addEventListener('input', (e) => {
-            alphaValue.textContent = e.target.value;
+            alphaValue.textContent = parseFloat(e.target.value).toFixed(2);
         });
 
         async function search(updateUrl = true) {
@@ -605,7 +671,12 @@
 
         function displayResults(results) {
             if (results.length === 0) {
-                resultsDiv.innerHTML = '<div class="no-results">no bufos found</div>';
+                resultsDiv.innerHTML = `
+                    <div class="no-results">
+                        <div class="no-results-text">no bufos found</div>
+                        <img src="https://all-the.bufo.zone/bufo-shrug.png" alt="bufo shrug" class="no-results-bufo">
+                    </div>
+                `;
                 return;
             }
 
@@ -635,7 +706,7 @@
                 searchInput.value = e.state.query;
                 if (e.state.alpha !== undefined) {
                     alphaSlider.value = e.state.alpha;
-                    alphaValue.textContent = e.state.alpha;
+                    alphaValue.textContent = parseFloat(e.state.alpha).toFixed(2);
                 }
                 search(false);
             }
@@ -649,7 +720,7 @@
 
             if (alpha) {
                 alphaSlider.value = alpha;
-                alphaValue.textContent = alpha;
+                alphaValue.textContent = parseFloat(alpha).toFixed(2);
             }
 
             if (query) {
