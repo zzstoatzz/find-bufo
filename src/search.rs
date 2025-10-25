@@ -263,6 +263,11 @@ async fn perform_search(
         })
         .collect();
 
+    // filter out zero-scored results (irrelevant matches from the other search method)
+    // this prevents vector-only results from appearing when alpha=0.0 (pure keyword)
+    // and keyword-only results from appearing when alpha=1.0 (pure semantic)
+    fused_scores.retain(|(_, score)| *score > 0.001);
+
     // sort by fused score (descending) and take top_k
     fused_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     fused_scores.truncate(top_k_val);
