@@ -10,6 +10,11 @@ deploy:
     @echo "deploying to fly.io..."
     fly deploy --wait-timeout 180
 
+# run dev server with hot reload
+dev:
+    @echo "starting dev server with hot reload..."
+    RUST_LOG=info cargo watch -x run -w src -w static
+
 # build and run locally
 run:
     @echo "building and running locally..."

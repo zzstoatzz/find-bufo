@@ -57,6 +57,9 @@ pub struct SearchQuery {
     /// default 0.7 favors semantic search while still considering exact matches
     #[serde(default = "default_alpha")]
     pub alpha: f32,
+    /// family-friendly mode: filters out inappropriate content (default true)
+    #[serde(default = "default_family_friendly")]
+    pub family_friendly: bool,
 }
 
 fn default_top_k() -> usize {
@@ -65,6 +68,20 @@ fn default_top_k() -> usize {
 
 fn default_alpha() -> f32 {
     0.7
+}
+
+fn default_family_friendly() -> bool {
+    true
+}
+
+/// blocklist of inappropriate bufos (filtered when family_friendly=true)
+fn get_inappropriate_bufos() -> Vec<&'static str> {
+    vec![
+        "bufo-juicy",
+        "good-news-bufo-offers-suppository",
+        "bufo-declines-your-suppository-offer",
+        "tsa-bufo-gropes-you",
+    ]
 }
 
 #[derive(Debug, Serialize)]
@@ -81,12 +98,13 @@ pub struct BufoResult {
 }
 
 /// generate etag for caching based on query parameters
-fn generate_etag(query: &str, top_k: usize, alpha: f32) -> String {
+fn generate_etag(query: &str, top_k: usize, alpha: f32, family_friendly: bool) -> String {
     let mut hasher = DefaultHasher::new();
     query.hash(&mut hasher);
     top_k.hash(&mut hasher);
     // convert f32 to bits for consistent hashing
     alpha.to_bits().hash(&mut hasher);
+    family_friendly.hash(&mut hasher);
     format!("\"{}\"", hasher.finish())
 }
 
@@ -95,6 +113,7 @@ async fn perform_search(
     query_text: String,
     top_k_val: usize,
     alpha: f32,
+    family_friendly: bool,
     config: &Config,
 ) -> ActixResult<SearchResponse> {
 
@@ -102,7 +121,8 @@ async fn perform_search(
         "bufo_search",
         query = &query_text,
         top_k = top_k_val as i64,
-        alpha = alpha as f64
+        alpha = alpha as f64,
+        family_friendly = family_friendly
     ).entered();
 
     logfire::info!(
@@ -280,6 +300,7 @@ async fn perform_search(
     );
 
     // convert to bufo results
+    let inappropriate_bufos = get_inappropriate_bufos();
     let results: Vec<BufoResult> = fused_scores
         .into_iter()
         .filter_map(|(id, score)| {
@@ -305,6 +326,14 @@ async fn perform_search(
                     score,
                 }
             })
+        })
+        .filter(|result| {
+            // filter out inappropriate bufos if family_friendly mode is enabled
+            if family_friendly {
+                !inappropriate_bufos.iter().any(|&blocked| result.name.contains(blocked))
+            } else {
+                true
+            }
         })
         .collect();
 
@@ -334,7 +363,13 @@ pub async fn search(
     query: web::Json<SearchQuery>,
     config: web::Data<Config>,
 ) -> ActixResult<HttpResponse> {
-    let response = perform_search(query.query.clone(), query.top_k, query.alpha, &config).await?;
+    let response = perform_search(
+        query.query.clone(),
+        query.top_k,
+        query.alpha,
+        query.family_friendly,
+        &config
+    ).await?;
     Ok(HttpResponse::Ok().json(response))
 }
 
@@ -345,7 +380,7 @@ pub async fn search_get(
     req: HttpRequest,
 ) -> ActixResult<HttpResponse> {
     // generate etag for caching
-    let etag = generate_etag(&query.query, query.top_k, query.alpha);
+    let etag = generate_etag(&query.query, query.top_k, query.alpha, query.family_friendly);
 
     // check if client has cached version
     if let Some(if_none_match) = req.headers().get("if-none-match") {
@@ -356,7 +391,13 @@ pub async fn search_get(
         }
     }
 
-    let response = perform_search(query.query.clone(), query.top_k, query.alpha, &config).await?;
+    let response = perform_search(
+        query.query.clone(),
+        query.top_k,
+        query.alpha,
+        query.family_friendly,
+        &config
+    ).await?;
 
     Ok(HttpResponse::Ok()
         .insert_header(("etag", etag.clone()))

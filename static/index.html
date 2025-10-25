@@ -195,6 +195,21 @@
             margin-top: 4px;
         }
 
+        .checkbox-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: #667eea;
+        }
+
         .sample-queries-container {
             text-align: center;
             margin-bottom: 30px;
@@ -565,6 +580,23 @@
                         <span>semantic</span>
                     </div>
                 </div>
+
+                <div class="option-group">
+                    <div class="option-label">
+                        <span class="option-name">family-friendly mode</span>
+                    </div>
+                    <div class="option-description">
+                        filter out inappropriate content
+                    </div>
+                    <label class="checkbox-wrapper">
+                        <input
+                            type="checkbox"
+                            id="familyFriendlyCheckbox"
+                            checked
+                        >
+                        <span>enabled</span>
+                    </label>
+                </div>
             </div>
         </div>
 
@@ -596,6 +628,7 @@
         const searchOptions = document.getElementById('searchOptions');
         const alphaSlider = document.getElementById('alphaSlider');
         const alphaValue = document.getElementById('alphaValue');
+        const familyFriendlyCheckbox = document.getElementById('familyFriendlyCheckbox');
 
         let hasSearched = false;
 
@@ -618,6 +651,7 @@
             if (!query) return;
 
             const alpha = parseFloat(alphaSlider.value);
+            const familyFriendly = familyFriendlyCheckbox.checked;
 
             // hide bufo after first search
             if (!hasSearched) {
@@ -631,8 +665,9 @@
                 params.set('q', query);
                 params.set('top_k', '20');
                 params.set('alpha', alpha.toString());
+                params.set('family_friendly', familyFriendly.toString());
                 const newUrl = `${window.location.pathname}?${params.toString()}`;
-                window.history.pushState({ query, alpha }, '', newUrl);
+                window.history.pushState({ query, alpha, familyFriendly }, '', newUrl);
             }
 
             searchButton.disabled = true;
@@ -646,6 +681,7 @@
                 params.set('query', query);
                 params.set('top_k', '20');
                 params.set('alpha', alpha.toString());
+                params.set('family_friendly', familyFriendly.toString());
 
                 const response = await fetch(`/api/search?${params.toString()}`, {
                     method: 'GET',
@@ -708,6 +744,9 @@
                     alphaSlider.value = e.state.alpha;
                     alphaValue.textContent = parseFloat(e.state.alpha).toFixed(2);
                 }
+                if (e.state.familyFriendly !== undefined) {
+                    familyFriendlyCheckbox.checked = e.state.familyFriendly;
+                }
                 search(false);
             }
         });
@@ -717,10 +756,15 @@
             const params = new URLSearchParams(window.location.search);
             const query = params.get('q');
             const alpha = params.get('alpha');
+            const familyFriendly = params.get('family_friendly');
 
             if (alpha) {
                 alphaSlider.value = alpha;
                 alphaValue.textContent = parseFloat(alpha).toFixed(2);
+            }
+
+            if (familyFriendly !== null) {
+                familyFriendlyCheckbox.checked = familyFriendly === 'true';
             }
 
             if (query) {
