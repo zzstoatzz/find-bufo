@@ -691,7 +691,18 @@
                 });
 
                 if (!response.ok) {
-                    throw new Error(`search failed: ${response.statusText}`);
+                    // try to extract error message from response body
+                    let errorMessage = response.statusText;
+                    try {
+                        const errorText = await response.text();
+                        // actix-web returns plain text error messages, not JSON
+                        if (errorText) {
+                            errorMessage = errorText;
+                        }
+                    } catch (e) {
+                        // if reading body fails, use the status text
+                    }
+                    throw new Error(errorMessage);
                 }
 
                 const data = await response.json();
