@@ -1,6 +1,26 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum TurbopufferError {
+    #[error("query too long: {message}")]
+    QueryTooLong { message: String },
+    #[error("turbopuffer API error: {0}")]
+    ApiError(String),
+    #[error("request failed: {0}")]
+    RequestFailed(#[from] reqwest::Error),
+    #[error("{0}")]
+    Other(#[from] anyhow::Error),
+}
+
+#[derive(Debug, Deserialize)]
+struct TurbopufferErrorResponse {
+    error: String,
+    #[allow(dead_code)]
+    status: String,
+}
 
 #[derive(Debug, Serialize)]
 pub struct QueryRequest {
@@ -64,7 +84,7 @@ impl TurbopufferClient {
             .context(format!("failed to parse query response: {}", body))
     }
 
-    pub async fn bm25_query(&self, query_text: &str, top_k: usize) -> Result<QueryResponse> {
+    pub async fn bm25_query(&self, query_text: &str, top_k: usize) -> Result<QueryResponse, TurbopufferError> {
         let url = format!(
             "https://api.turbopuffer.com/v1/vectors/{}/query",
             self.namespace
@@ -76,7 +96,9 @@ impl TurbopufferClient {
             "include_attributes": ["url", "name", "filename"],
         });
 
-        log::debug!("turbopuffer BM25 query request: {}", serde_json::to_string_pretty(&request)?);
+        if let Ok(pretty) = serde_json::to_string_pretty(&request) {
+            log::debug!("turbopuffer BM25 query request: {}", pretty);
+        }
 
         let response = self
             .client
@@ -84,20 +106,34 @@ impl TurbopufferClient {
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&request)
             .send()
-            .await
-            .context("failed to send BM25 query request")?;
+            .await?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("turbopuffer BM25 query failed with status {}: {}", status, body);
+
+            // try to parse turbopuffer error response
+            if let Ok(error_resp) = serde_json::from_str::<TurbopufferErrorResponse>(&body) {
+                // check if it's a query length error
+                if error_resp.error.contains("too long") && error_resp.error.contains("max 1024") {
+                    return Err(TurbopufferError::QueryTooLong {
+                        message: error_resp.error,
+                    });
+                }
+            }
+
+            return Err(TurbopufferError::ApiError(format!(
+                "turbopuffer BM25 query failed with status {}: {}",
+                status, body
+            )));
         }
 
-        let body = response.text().await.context("failed to read response body")?;
+        let body = response.text().await
+            .map_err(|e| TurbopufferError::Other(anyhow::anyhow!("failed to read response body: {}", e)))?;
         log::debug!("turbopuffer BM25 response: {}", body);
 
         let parsed: QueryResponse = serde_json::from_str(&body)
-            .context(format!("failed to parse BM25 query response: {}", body))?;
+            .map_err(|e| TurbopufferError::Other(anyhow::anyhow!("failed to parse BM25 query response: {}", e)))?;
 
         // DEBUG: log first result to see what BM25 returns
         if let Some(first) = parsed.first() {

@@ -42,7 +42,7 @@
 
 use crate::config::Config;
 use crate::embedding::EmbeddingClient;
-use crate::turbopuffer::{QueryRequest, TurbopufferClient};
+use crate::turbopuffer::{QueryRequest, TurbopufferClient, TurbopufferError};
 use actix_web::{web, HttpRequest, HttpResponse, Result as ActixResult};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -228,10 +228,21 @@ async fn perform_search(
                 query = &query_text,
                 top_k = search_top_k as i64
             );
-            actix_web::error::ErrorInternalServerError(format!(
-                "failed to query turbopuffer (BM25): {}",
-                e
-            ))
+
+            // return appropriate HTTP status based on error type
+            match e {
+                TurbopufferError::QueryTooLong { .. } => {
+                    actix_web::error::ErrorBadRequest(
+                        "search query is too long (max 1024 characters for text search). try a shorter query."
+                    )
+                }
+                _ => {
+                    actix_web::error::ErrorInternalServerError(format!(
+                        "failed to query turbopuffer (BM25): {}",
+                        e
+                    ))
+                }
+            }
         })?
     };
 
