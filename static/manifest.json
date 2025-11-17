@@ -1,0 +1,17 @@
+{
+  "name": "find bufo",
+  "short_name": "find bufo",
+  "description": "hybrid search for bufo.zone",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#8ba888",
+  "theme_color": "#8ba888",
+  "icons": [
+    {
+      "src": "/static/favicon.png",
+      "sizes": "112x112",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
