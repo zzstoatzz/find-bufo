@@ -61,9 +61,12 @@ pub struct SearchQuery {
     /// family-friendly mode: filters out inappropriate content (default true)
     #[serde(default = "default_family_friendly")]
     pub family_friendly: bool,
-    /// comma-separated glob patterns to exclude from results (e.g., "*party*,*sad*")
+    /// comma-separated regex patterns to exclude from results (e.g., "excited,party")
     #[serde(default)]
     pub exclude: Option<String>,
+    /// comma-separated regex patterns to include (overrides exclude)
+    #[serde(default)]
+    pub include: Option<String>,
 }
 
 fn default_top_k() -> usize {
@@ -102,7 +105,7 @@ pub struct BufoResult {
 }
 
 /// generate etag for caching based on query parameters
-fn generate_etag(query: &str, top_k: usize, alpha: f32, family_friendly: bool, exclude: &Option<String>) -> String {
+fn generate_etag(query: &str, top_k: usize, alpha: f32, family_friendly: bool, exclude: &Option<String>, include: &Option<String>) -> String {
     let mut hasher = DefaultHasher::new();
     query.hash(&mut hasher);
     top_k.hash(&mut hasher);
@@ -110,6 +113,7 @@ fn generate_etag(query: &str, top_k: usize, alpha: f32, family_friendly: bool, e
     alpha.to_bits().hash(&mut hasher);
     family_friendly.hash(&mut hasher);
     exclude.hash(&mut hasher);
+    include.hash(&mut hasher);
     format!("\"{}\"", hasher.finish())
 }
 
@@ -120,6 +124,7 @@ async fn perform_search(
     alpha: f32,
     family_friendly: bool,
     exclude: Option<String>,
+    include: Option<String>,
     config: &Config,
 ) -> ActixResult<SearchResponse> {
     // parse and compile exclusion regex patterns from comma-separated string
@@ -130,6 +135,18 @@ async fn perform_search(
                 .map(|p| p.trim())
                 .filter(|p| !p.is_empty())
                 .filter_map(|p| Regex::new(p).ok()) // silently skip invalid patterns
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // parse and compile inclusion regex patterns (these override exclusions)
+    let include_patterns: Vec<Regex> = include
+        .as_ref()
+        .map(|s| {
+            s.split(',')
+                .map(|p| p.trim())
+                .filter(|p| !p.is_empty())
+                .filter_map(|p| Regex::new(p).ok())
                 .collect()
         })
         .unwrap_or_default();
@@ -365,11 +382,16 @@ async fn perform_search(
                 return false;
             }
 
-            // filter out results matching any exclude regex pattern
-            for pattern in &exclude_patterns {
-                if pattern.is_match(&result.name) {
-                    return false;
-                }
+            // check if result matches any include pattern (allowlist override)
+            let matches_include = include_patterns.iter().any(|p| p.is_match(&result.name));
+
+            // check if result matches any exclude pattern
+            let matches_exclude = exclude_patterns.iter().any(|p| p.is_match(&result.name));
+
+            // keep if: matches include OR doesn't match exclude
+            // i.e., include overrides exclude
+            if matches_exclude && !matches_include {
+                return false;
             }
 
             true
@@ -409,6 +431,7 @@ pub async fn search(
         query.alpha,
         query.family_friendly,
         query.exclude.clone(),
+        query.include.clone(),
         &config
     ).await?;
     Ok(HttpResponse::Ok().json(response))
@@ -421,7 +444,7 @@ pub async fn search_get(
     req: HttpRequest,
 ) -> ActixResult<HttpResponse> {
     // generate etag for caching
-    let etag = generate_etag(&query.query, query.top_k, query.alpha, query.family_friendly, &query.exclude);
+    let etag = generate_etag(&query.query, query.top_k, query.alpha, query.family_friendly, &query.exclude, &query.include);
 
     // check if client has cached version
     if let Some(if_none_match) = req.headers().get("if-none-match") {
@@ -438,6 +461,7 @@ pub async fn search_get(
         query.alpha,
         query.family_friendly,
         query.exclude.clone(),
+        query.include.clone(),
         &config
     ).await?;
 
