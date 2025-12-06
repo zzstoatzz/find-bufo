@@ -683,6 +683,7 @@ dependencies = [
  "opentelemetry 0.26.0",
  "opentelemetry-instrumentation-actix-web",
  "opentelemetry-otlp 0.26.0",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

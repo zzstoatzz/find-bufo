@@ -24,3 +24,4 @@ log = "0.4"  # keep for compatibility with existing debug logs
 opentelemetry = { version = "0.26", features = ["trace", "metrics"] }
 opentelemetry-instrumentation-actix-web = { version = "0.23", features = ["metrics"] }
 opentelemetry-otlp = { version = "0.26", features = ["trace", "http-proto", "reqwest-client", "reqwest-rustls"] }
+regex = "1.12"

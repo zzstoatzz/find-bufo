@@ -44,6 +44,7 @@ use crate::config::Config;
 use crate::embedding::EmbeddingClient;
 use crate::turbopuffer::{QueryRequest, TurbopufferClient, TurbopufferError};
 use actix_web::{web, HttpRequest, HttpResponse, Result as ActixResult};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -60,6 +61,9 @@ pub struct SearchQuery {
     /// family-friendly mode: filters out inappropriate content (default true)
     #[serde(default = "default_family_friendly")]
     pub family_friendly: bool,
+    /// comma-separated glob patterns to exclude from results (e.g., "*party*,*sad*")
+    #[serde(default)]
+    pub exclude: Option<String>,
 }
 
 fn default_top_k() -> usize {
@@ -98,13 +102,14 @@ pub struct BufoResult {
 }
 
 /// generate etag for caching based on query parameters
-fn generate_etag(query: &str, top_k: usize, alpha: f32, family_friendly: bool) -> String {
+fn generate_etag(query: &str, top_k: usize, alpha: f32, family_friendly: bool, exclude: &Option<String>) -> String {
     let mut hasher = DefaultHasher::new();
     query.hash(&mut hasher);
     top_k.hash(&mut hasher);
     // convert f32 to bits for consistent hashing
     alpha.to_bits().hash(&mut hasher);
     family_friendly.hash(&mut hasher);
+    exclude.hash(&mut hasher);
     format!("\"{}\"", hasher.finish())
 }
 
@@ -114,22 +119,37 @@ async fn perform_search(
     top_k_val: usize,
     alpha: f32,
     family_friendly: bool,
+    exclude: Option<String>,
     config: &Config,
 ) -> ActixResult<SearchResponse> {
+    // parse and compile exclusion regex patterns from comma-separated string
+    let exclude_patterns: Vec<Regex> = exclude
+        .as_ref()
+        .map(|s| {
+            s.split(',')
+                .map(|p| p.trim())
+                .filter(|p| !p.is_empty())
+                .filter_map(|p| Regex::new(p).ok()) // silently skip invalid patterns
+                .collect()
+        })
+        .unwrap_or_default();
 
     let _search_span = logfire::span!(
         "bufo_search",
         query = &query_text,
         top_k = top_k_val as i64,
         alpha = alpha as f64,
-        family_friendly = family_friendly
+        family_friendly = family_friendly,
+        exclude_patterns_count = exclude_patterns.len() as i64
     ).entered();
 
+    let exclude_patterns_str: String = exclude_patterns.iter().map(|r| r.as_str()).collect::<Vec<_>>().join(",");
     logfire::info!(
         "search request received",
         query = &query_text,
         top_k = top_k_val as i64,
-        alpha = alpha as f64
+        alpha = alpha as f64,
+        exclude_patterns = &exclude_patterns_str
     );
 
     let embedding_client = EmbeddingClient::new(config.voyage_api_key.clone());
@@ -170,7 +190,8 @@ async fn perform_search(
     );
 
     // run vector search (semantic)
-    let search_top_k = top_k_val * 2; // get more results for better fusion
+    // fetch extra results to ensure we have enough after filtering by family_friendly and exclude patterns
+    let search_top_k = top_k_val * 5;
     let vector_request = QueryRequest {
         rank_by: vec![
             serde_json::json!("vector"),
@@ -299,18 +320,18 @@ async fn perform_search(
     // and keyword-only results from appearing when alpha=1.0 (pure semantic)
     fused_scores.retain(|(_, score)| *score > 0.001);
 
-    // sort by fused score (descending) and take top_k
+    // sort by fused score (descending)
     fused_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-    fused_scores.truncate(top_k_val);
 
     logfire::info!(
         "weighted fusion completed",
         total_candidates = all_results.len() as i64,
         alpha = alpha as f64,
-        final_results = fused_scores.len() as i64
+        pre_filter_results = fused_scores.len() as i64
     );
 
-    // convert to bufo results
+    // convert to bufo results and apply ALL filtering BEFORE truncating
+    // this ensures we return top_k results after filtering, not fewer
     let inappropriate_bufos = get_inappropriate_bufos();
     let results: Vec<BufoResult> = fused_scores
         .into_iter()
@@ -340,12 +361,20 @@ async fn perform_search(
         })
         .filter(|result| {
             // filter out inappropriate bufos if family_friendly mode is enabled
-            if family_friendly {
-                !inappropriate_bufos.iter().any(|&blocked| result.name.contains(blocked))
-            } else {
-                true
+            if family_friendly && inappropriate_bufos.iter().any(|&blocked| result.name.contains(blocked)) {
+                return false;
             }
+
+            // filter out results matching any exclude regex pattern
+            for pattern in &exclude_patterns {
+                if pattern.is_match(&result.name) {
+                    return false;
+                }
+            }
+
+            true
         })
+        .take(top_k_val) // take top_k AFTER filtering
         .collect();
 
     let results_count = results.len() as i64;
@@ -379,6 +408,7 @@ pub async fn search(
         query.top_k,
         query.alpha,
         query.family_friendly,
+        query.exclude.clone(),
         &config
     ).await?;
     Ok(HttpResponse::Ok().json(response))
@@ -391,7 +421,7 @@ pub async fn search_get(
     req: HttpRequest,
 ) -> ActixResult<HttpResponse> {
     // generate etag for caching
-    let etag = generate_etag(&query.query, query.top_k, query.alpha, query.family_friendly);
+    let etag = generate_etag(&query.query, query.top_k, query.alpha, query.family_friendly, &query.exclude);
 
     // check if client has cached version
     if let Some(if_none_match) = req.headers().get("if-none-match") {
@@ -407,6 +437,7 @@ pub async fn search_get(
         query.top_k,
         query.alpha,
         query.family_friendly,
+        query.exclude.clone(),
         &config
     ).await?;
 

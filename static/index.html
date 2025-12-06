@@ -213,6 +213,15 @@
             accent-color: #667eea;
         }
 
+        .option-group a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .option-group a:hover {
+            text-decoration: underline;
+        }
+
         .sample-queries-container {
             text-align: center;
             margin-bottom: 30px;
@@ -600,6 +609,23 @@
                         <span>enabled</span>
                     </label>
                 </div>
+
+                <div class="option-group">
+                    <div class="option-label">
+                        <span class="option-name">exclude patterns</span>
+                    </div>
+                    <div class="option-description">
+                        comma-separated <a href="https://regex101.com/" target="_blank">regex</a> patterns to exclude (e.g., excited,party)
+                        <br>
+                        <span style="color: #999; font-size: 0.9em;">new to regex? <a href="https://claude.ai" target="_blank">claude</a> can write patterns for you</span>
+                    </div>
+                    <input
+                        type="text"
+                        id="excludeInput"
+                        placeholder="pattern1,pattern2"
+                        style="width: 100%; padding: 10px; font-size: 14px;"
+                    >
+                </div>
             </div>
         </div>
 
@@ -632,6 +658,7 @@
         const alphaSlider = document.getElementById('alphaSlider');
         const alphaValue = document.getElementById('alphaValue');
         const familyFriendlyCheckbox = document.getElementById('familyFriendlyCheckbox');
+        const excludeInput = document.getElementById('excludeInput');
 
         let hasSearched = false;
 
@@ -655,6 +682,7 @@
 
             const alpha = parseFloat(alphaSlider.value);
             const familyFriendly = familyFriendlyCheckbox.checked;
+            const exclude = excludeInput.value.trim();
 
             // hide bufo after first search
             if (!hasSearched) {
@@ -669,8 +697,9 @@
                 params.set('top_k', '20');
                 params.set('alpha', alpha.toString());
                 params.set('family_friendly', familyFriendly.toString());
+                if (exclude) params.set('exclude', exclude);
                 const newUrl = `${window.location.pathname}?${params.toString()}`;
-                window.history.pushState({ query, alpha, familyFriendly }, '', newUrl);
+                window.history.pushState({ query, alpha, familyFriendly, exclude }, '', newUrl);
             }
 
             searchButton.disabled = true;
@@ -685,6 +714,7 @@
                 params.set('top_k', '20');
                 params.set('alpha', alpha.toString());
                 params.set('family_friendly', familyFriendly.toString());
+                if (exclude) params.set('exclude', exclude);
 
                 const response = await fetch(`/api/search?${params.toString()}`, {
                     method: 'GET',
@@ -761,6 +791,9 @@
                 if (e.state.familyFriendly !== undefined) {
                     familyFriendlyCheckbox.checked = e.state.familyFriendly;
                 }
+                if (e.state.exclude !== undefined) {
+                    excludeInput.value = e.state.exclude;
+                }
                 search(false);
             }
         });
@@ -771,6 +804,7 @@
             const query = params.get('q');
             const alpha = params.get('alpha');
             const familyFriendly = params.get('family_friendly');
+            const exclude = params.get('exclude');
 
             if (alpha) {
                 alphaSlider.value = alpha;
@@ -779,6 +813,10 @@
 
             if (familyFriendly !== null) {
                 familyFriendlyCheckbox.checked = familyFriendly === 'true';
+            }
+
+            if (exclude) {
+                excludeInput.value = exclude;
             }
 
             if (query) {
