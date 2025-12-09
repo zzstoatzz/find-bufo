@@ -553,6 +553,7 @@
                     id="searchInput"
                     placeholder="describe the bufo you seek..."
                     autocomplete="off"
+                    autofocus
                 >
                 <button id="searchButton">search</button>
             </div>
@@ -823,6 +824,9 @@
                 searchInput.value = query;
                 search(false); // don't update URL since we're already loading from it
             }
+
+            // ensure focus on the search input
+            searchInput.focus();
         });
 
         // handle sample query button clicks
