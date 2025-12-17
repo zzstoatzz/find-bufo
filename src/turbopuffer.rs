@@ -1,51 +1,55 @@
-use anyhow::{Context, Result};
+//! turbopuffer vector database implementation
+//!
+//! implements the `VectorStore` trait for turbopuffer's hybrid search API.
+
+use crate::providers::{SearchResult, VectorSearchError, VectorStore};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
-#[derive(Debug, Error)]
-pub enum TurbopufferError {
-    #[error("query too long: {message}")]
-    QueryTooLong { message: String },
-    #[error("turbopuffer API error: {0}")]
-    ApiError(String),
-    #[error("request failed: {0}")]
-    RequestFailed(#[from] reqwest::Error),
-    #[error("{0}")]
-    Other(#[from] anyhow::Error),
+const TURBOPUFFER_API_BASE: &str = "https://api.turbopuffer.com/v1/vectors";
+
+/// raw response row from turbopuffer API
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct QueryRow {
+    pub id: String,
+    pub dist: f32,
+    pub attributes: serde_json::Map<String, serde_json::Value>,
+}
+
+impl From<QueryRow> for SearchResult {
+    fn from(row: QueryRow) -> Self {
+        let attributes = row
+            .attributes
+            .iter()
+            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+            .collect();
+
+        SearchResult {
+            id: row.id,
+            score: row.dist,
+            attributes,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
-struct TurbopufferErrorResponse {
+struct ErrorResponse {
     error: String,
     #[allow(dead_code)]
     status: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct QueryRequest {
-    pub rank_by: Vec<serde_json::Value>,
-    pub top_k: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub include_attributes: Option<Vec<String>>,
-}
-
-pub type QueryResponse = Vec<QueryRow>;
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct QueryRow {
-    pub id: String,
-    pub dist: f32, // for vector: cosine distance; for BM25: BM25 score
-    pub attributes: serde_json::Map<String, serde_json::Value>,
-}
-
-pub struct TurbopufferClient {
+/// turbopuffer vector database client
+///
+/// supports both ANN vector search and BM25 full-text search.
+#[derive(Clone)]
+pub struct TurbopufferStore {
     client: Client,
     api_key: String,
     namespace: String,
 }
 
-impl TurbopufferClient {
+impl TurbopufferStore {
     pub fn new(api_key: String, namespace: String) -> Self {
         Self {
             client: Client::new(),
@@ -54,96 +58,100 @@ impl TurbopufferClient {
         }
     }
 
-    pub async fn query(&self, request: QueryRequest) -> Result<QueryResponse> {
-        let url = format!(
-            "https://api.turbopuffer.com/v1/vectors/{}/query",
-            self.namespace
-        );
-
-        let request_json = serde_json::to_string_pretty(&request)?;
-        log::debug!("turbopuffer query request: {}", request_json);
-
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await
-            .context("failed to send query request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("turbopuffer query failed with status {}: {}", status, body);
-        }
-
-        let body = response.text().await.context("failed to read response body")?;
-
-        serde_json::from_str(&body)
-            .context(format!("failed to parse query response: {}", body))
+    fn query_url(&self) -> String {
+        format!("{}/{}/query", TURBOPUFFER_API_BASE, self.namespace)
     }
 
-    pub async fn bm25_query(&self, query_text: &str, top_k: usize) -> Result<QueryResponse, TurbopufferError> {
-        let url = format!(
-            "https://api.turbopuffer.com/v1/vectors/{}/query",
-            self.namespace
-        );
-
-        let request = serde_json::json!({
-            "rank_by": ["name", "BM25", query_text],
-            "top_k": top_k,
-            "include_attributes": ["url", "name", "filename"],
-        });
-
-        if let Ok(pretty) = serde_json::to_string_pretty(&request) {
-            log::debug!("turbopuffer BM25 query request: {}", pretty);
-        }
-
+    async fn execute_query(
+        &self,
+        request: serde_json::Value,
+    ) -> Result<Vec<QueryRow>, VectorSearchError> {
         let response = self
             .client
-            .post(&url)
+            .post(self.query_url())
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&request)
             .send()
             .await?;
 
         if !response.status().is_success() {
-            let status = response.status();
+            let status = response.status().as_u16();
             let body = response.text().await.unwrap_or_default();
 
-            // try to parse turbopuffer error response
-            if let Ok(error_resp) = serde_json::from_str::<TurbopufferErrorResponse>(&body) {
-                // check if it's a query length error
+            // check for specific error types
+            if let Ok(error_resp) = serde_json::from_str::<ErrorResponse>(&body) {
                 if error_resp.error.contains("too long") && error_resp.error.contains("max 1024") {
-                    return Err(TurbopufferError::QueryTooLong {
+                    return Err(VectorSearchError::QueryTooLong {
                         message: error_resp.error,
                     });
                 }
             }
 
-            return Err(TurbopufferError::ApiError(format!(
-                "turbopuffer BM25 query failed with status {}: {}",
-                status, body
-            )));
+            return Err(VectorSearchError::Api { status, body });
         }
 
-        let body = response.text().await
-            .map_err(|e| TurbopufferError::Other(anyhow::anyhow!("failed to read response body: {}", e)))?;
-        log::debug!("turbopuffer BM25 response: {}", body);
+        let body = response.text().await.map_err(|e| {
+            VectorSearchError::Other(anyhow::anyhow!("failed to read response: {}", e))
+        })?;
 
-        let parsed: QueryResponse = serde_json::from_str(&body)
-            .map_err(|e| TurbopufferError::Other(anyhow::anyhow!("failed to parse BM25 query response: {}", e)))?;
+        serde_json::from_str(&body)
+            .map_err(|e| VectorSearchError::Parse(format!("failed to parse response: {}", e)))
+    }
+}
 
-        // DEBUG: log first result to see what BM25 returns
-        if let Some(first) = parsed.first() {
-            log::info!("BM25 first result - id: {}, dist: {}, name: {:?}",
+impl VectorStore for TurbopufferStore {
+    async fn search_by_vector(
+        &self,
+        embedding: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<SearchResult>, VectorSearchError> {
+        let request = serde_json::json!({
+            "rank_by": ["vector", "ANN", embedding],
+            "top_k": top_k,
+            "include_attributes": ["url", "name", "filename"],
+        });
+
+        log::debug!(
+            "turbopuffer vector query: {}",
+            serde_json::to_string_pretty(&request).unwrap_or_default()
+        );
+
+        let rows = self.execute_query(request).await?;
+        Ok(rows.into_iter().map(SearchResult::from).collect())
+    }
+
+    async fn search_by_keyword(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<SearchResult>, VectorSearchError> {
+        let request = serde_json::json!({
+            "rank_by": ["name", "BM25", query],
+            "top_k": top_k,
+            "include_attributes": ["url", "name", "filename"],
+        });
+
+        log::debug!(
+            "turbopuffer BM25 query: {}",
+            serde_json::to_string_pretty(&request).unwrap_or_default()
+        );
+
+        let rows = self.execute_query(request).await?;
+
+        if let Some(first) = rows.first() {
+            log::info!(
+                "BM25 first result - id: {}, dist: {}, name: {:?}",
                 first.id,
                 first.dist,
                 first.attributes.get("name")
             );
         }
 
-        Ok(parsed)
+        Ok(rows.into_iter().map(SearchResult::from).collect())
+    }
+
+    fn name(&self) -> &'static str {
+        "turbopuffer"
     }
 }
+

@@ -1,5 +1,8 @@
 mod config;
 mod embedding;
+mod filter;
+mod providers;
+mod scoring;
 mod search;
 mod turbopuffer;
 
