@@ -45,9 +45,8 @@ def get_recent_bufo_names(client: Client, minutes: int) -> set[str]:
                 if hasattr(media, "images"):
                     for img in media.images:
                         if img.alt:
-                            # convert alt text back to filename format
-                            recent.add(img.alt.replace(" ", "-") + ".png")
-                            recent.add(img.alt.replace(" ", "-") + ".gif")
+                            # convert alt text back to name format (no extension)
+                            recent.add(img.alt.replace(" ", "-"))
 
         logger.info(f"found {len(recent)} bufos posted in last {minutes} minutes")
         return recent
