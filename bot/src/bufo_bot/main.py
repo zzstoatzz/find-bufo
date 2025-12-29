@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 
 import httpx
 from atproto import Client, models
@@ -12,6 +13,47 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def get_recent_bufo_names(client: Client, minutes: int) -> set[str]:
+    """fetch bufo names we've posted recently (from alt text)"""
+    try:
+        # fetch our recent posts
+        feed = client.app.bsky.feed.get_author_feed(
+            {"actor": settings.bsky_handle, "limit": 50}
+        )
+        cutoff = datetime.now(timezone.utc).timestamp() - (minutes * 60)
+        recent = set()
+
+        for item in feed.feed:
+            post = item.post
+            # parse created_at timestamp
+            created = post.record.created_at
+            if isinstance(created, str):
+                # parse ISO format
+                try:
+                    ts = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    if ts.timestamp() < cutoff:
+                        break  # posts are sorted newest first
+                except ValueError:
+                    continue
+
+            # extract alt text from embedded image
+            embed = post.record.embed
+            if embed and hasattr(embed, "media"):
+                media = embed.media
+                if hasattr(media, "images"):
+                    for img in media.images:
+                        if img.alt:
+                            # convert alt text back to filename format
+                            recent.add(img.alt.replace(" ", "-") + ".png")
+                            recent.add(img.alt.replace(" ", "-") + ".gif")
+
+        logger.info(f"found {len(recent)} bufos posted in last {minutes} minutes")
+        return recent
+    except Exception as e:
+        logger.warning(f"failed to fetch recent posts: {e}")
+        return set()
 
 
 def load_bufos() -> list[Bufo]:
@@ -110,15 +152,33 @@ def run_bot():
     # connect to jetstream
     jetstream = JetstreamClient(settings.jetstream_endpoint)
 
+    # track recently posted bufos (refreshed periodically)
+    recent_bufos: set[str] = set()
+    last_refresh = 0.0
+
     # process posts
     for post in jetstream.stream_posts():
         match = matcher.find_match(post.text)
         if match:
             logger.info(f"match: '{match.phrase}' -> {match.name}")
-            if settings.posting_enabled:
-                quote_post_with_bufo(client, post, match)
-            else:
+
+            if not settings.posting_enabled:
                 logger.info("posting disabled, skipping")
+                continue
+
+            # refresh cooldown cache every 5 minutes
+            now = datetime.now(timezone.utc).timestamp()
+            if now - last_refresh > 300:
+                recent_bufos = get_recent_bufo_names(client, settings.cooldown_minutes)
+                last_refresh = now
+
+            # check cooldown
+            if match.name in recent_bufos:
+                logger.info(f"cooldown: {match.name} posted recently, skipping")
+                continue
+
+            quote_post_with_bufo(client, post, match)
+            recent_bufos.add(match.name)  # add to local cache immediately
 
 
 def main():

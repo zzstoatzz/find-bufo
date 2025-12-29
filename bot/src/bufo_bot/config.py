@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # must be explicitly enabled to post
     posting_enabled: bool = False
 
+    # cooldown: don't repost same bufo within this many minutes
+    cooldown_minutes: int = 120
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

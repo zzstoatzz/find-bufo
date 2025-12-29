@@ -22,6 +22,7 @@ bluesky bot that listens to the firehose and quote-posts matching bufo images.
 | `BSKY_APP_PASSWORD` | required | app password from bsky settings |
 | `MIN_PHRASE_WORDS` | `4` | minimum words in phrase to match |
 | `POSTING_ENABLED` | `false` | must be `true` to actually post |
+| `COOLDOWN_MINUTES` | `120` | don't repost same bufo within this time |
 | `JETSTREAM_ENDPOINT` | `jetstream2.us-east.bsky.network` | jetstream server |
 
 ## local dev
