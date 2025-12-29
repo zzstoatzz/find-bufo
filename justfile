@@ -1,4 +1,5 @@
 # bufo search justfile
+mod bot
 
 # re-index all bufos with new embeddings
 re-index:

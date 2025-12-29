@@ -1,0 +1,18 @@
+# bot/justfile
+set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+
+# run the bot locally
+run:
+    uv run bufo-bot
+
+# deploy to fly.io
+deploy:
+    fly deploy --wait-timeout 180
+
+# check logs
+logs:
+    fly logs -a bufo-bot
+
+# set secrets (run once)
+secrets HANDLE PASSWORD:
+    fly secrets set BSKY_HANDLE={{ HANDLE }} BSKY_APP_PASSWORD={{ PASSWORD }} -a bufo-bot

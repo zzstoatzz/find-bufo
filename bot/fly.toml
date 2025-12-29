@@ -1,0 +1,22 @@
+app = "bufo-bot"
+primary_region = "ewr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  JETSTREAM_ENDPOINT = "jetstream2.us-east.bsky.network"
+
+# This is a worker process, not an HTTP service
+# It runs continuously and doesn't expose any ports
+[processes]
+  worker = "uv run bufo-bot"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+# secrets to set via: fly secrets set KEY=value -a bufo-bot
+# - BSKY_HANDLE (e.g., findbufo.bsky.social)
+# - BSKY_APP_PASSWORD (app password from bsky settings)
