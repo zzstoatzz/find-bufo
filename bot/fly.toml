@@ -18,5 +18,6 @@ primary_region = "ewr"
   cpus = 1
 
 # secrets to set via: fly secrets set KEY=value -a bufo-bot
-# - BSKY_HANDLE (e.g., findbufo.bsky.social)
+# - BSKY_HANDLE (e.g., find-bufo.com)
 # - BSKY_APP_PASSWORD (app password from bsky settings)
+# - POSTING_ENABLED=true (to enable posting, default is false)
