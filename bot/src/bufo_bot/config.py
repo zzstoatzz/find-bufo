@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     # cooldown: don't repost same bufo within this many minutes
     cooldown_minutes: int = 120
 
+    # exclude bufos matching these patterns (comma-separated regex)
+    exclude_patterns: str = "what-have-you-done,what-have-i-done,sad,crying,cant-take"
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

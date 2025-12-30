@@ -57,10 +57,15 @@ def get_recent_bufo_names(client: Client, minutes: int) -> set[str]:
 
 def load_bufos() -> list[Bufo]:
     """fetch the list of bufos from the find-bufo API"""
-    api_url = "https://find-bufo.com/api/search?query=bufo&top_k=2000&alpha=0"
+    params = {
+        "query": "bufo",
+        "top_k": 2000,
+        "alpha": 0,
+        "exclude": settings.exclude_patterns,
+    }
 
     try:
-        resp = httpx.get(api_url, timeout=30)
+        resp = httpx.get("https://find-bufo.com/api/search", params=params, timeout=30)
         resp.raise_for_status()
         data = resp.json()
         bufos = [
