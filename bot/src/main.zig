@@ -100,20 +100,7 @@ fn onPost(post: jetstream.Post) void {
     };
     defer state.allocator.free(img_data);
 
-    // determine content type from URL
-    const content_type = if (mem.endsWith(u8, match.url, ".gif"))
-        "image/gif"
-    else if (mem.endsWith(u8, match.url, ".png"))
-        "image/png"
-    else
-        "image/jpeg";
-
-    // upload blob
-    const blob_json = state.bsky_client.uploadBlob(img_data, content_type) catch |err| {
-        std.debug.print("failed to upload blob: {}\n", .{err});
-        return;
-    };
-    defer state.allocator.free(blob_json);
+    const is_gif = mem.endsWith(u8, match.url, ".gif");
 
     // build alt text (name without extension, dashes to spaces)
     var alt_buf: [128]u8 = undefined;
@@ -138,10 +125,45 @@ fn onPost(post: jetstream.Post) void {
     };
     defer state.allocator.free(cid);
 
-    state.bsky_client.createQuotePost(post.uri, cid, blob_json, alt_text) catch |err| {
-        std.debug.print("failed to create quote post: {}\n", .{err});
-        return;
-    };
+    if (is_gif) {
+        // upload as video for animated GIFs
+        std.debug.print("uploading {d} bytes as video\n", .{img_data.len});
+        const job_id = state.bsky_client.uploadVideo(img_data, match.name) catch |err| {
+            std.debug.print("failed to upload video: {}\n", .{err});
+            return;
+        };
+        defer state.allocator.free(job_id);
+
+        std.debug.print("waiting for video processing (job: {s})...\n", .{job_id});
+        const blob_json = state.bsky_client.waitForVideo(job_id) catch |err| {
+            std.debug.print("failed to wait for video: {}\n", .{err});
+            return;
+        };
+        defer state.allocator.free(blob_json);
+
+        state.bsky_client.createVideoQuotePost(post.uri, cid, blob_json, alt_text) catch |err| {
+            std.debug.print("failed to create video quote post: {}\n", .{err});
+            return;
+        };
+    } else {
+        // upload as image
+        const content_type = if (mem.endsWith(u8, match.url, ".png"))
+            "image/png"
+        else
+            "image/jpeg";
+
+        std.debug.print("uploading {d} bytes as {s}\n", .{ img_data.len, content_type });
+        const blob_json = state.bsky_client.uploadBlob(img_data, content_type) catch |err| {
+            std.debug.print("failed to upload blob: {}\n", .{err});
+            return;
+        };
+        defer state.allocator.free(blob_json);
+
+        state.bsky_client.createQuotePost(post.uri, cid, blob_json, alt_text) catch |err| {
+            std.debug.print("failed to create quote post: {}\n", .{err});
+            return;
+        };
+    }
     std.debug.print("posted bufo quote: {s}\n", .{match.name});
 
     // update cooldown cache

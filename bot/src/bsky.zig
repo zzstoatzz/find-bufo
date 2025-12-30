@@ -103,7 +103,8 @@ pub const BskyClient = struct {
         };
 
         if (result.status != .ok) {
-            std.debug.print("upload blob failed with status: {}\n", .{result.status});
+            const err_response = aw.toArrayList();
+            std.debug.print("upload blob failed with status: {} - {s}\n", .{ result.status, err_response.items });
             return error.UploadFailed;
         }
 
@@ -227,6 +228,200 @@ pub const BskyClient = struct {
         }
 
         return try aw.toOwnedSlice();
+    }
+
+    pub fn getServiceAuth(self: *BskyClient) ![]const u8 {
+        if (self.access_jwt == null or self.did == null) return error.NotLoggedIn;
+
+        var client = self.httpClient();
+        defer client.deinit();
+
+        var url_buf: [256]u8 = undefined;
+        const url = std.fmt.bufPrint(&url_buf, "https://bsky.social/xrpc/com.atproto.server.getServiceAuth?aud=did:web:bsky.social&lxm=com.atproto.repo.uploadBlob", .{}) catch return error.UrlTooLong;
+
+        var auth_buf: [512]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{self.access_jwt.?}) catch return error.AuthTooLong;
+
+        var aw: Io.Writer.Allocating = .init(self.allocator);
+        defer aw.deinit();
+
+        const result = client.fetch(.{
+            .location = .{ .url = url },
+            .method = .GET,
+            .headers = .{ .authorization = .{ .override = auth_header } },
+            .response_writer = &aw.writer,
+        }) catch |err| {
+            std.debug.print("get service auth failed: {}\n", .{err});
+            return err;
+        };
+
+        if (result.status != .ok) {
+            const err_response = aw.toArrayList();
+            std.debug.print("get service auth failed with status: {} - {s}\n", .{ result.status, err_response.items });
+            return error.ServiceAuthFailed;
+        }
+
+        const response = aw.toArrayList();
+        const parsed = json.parseFromSlice(json.Value, self.allocator, response.items, .{}) catch return error.ParseError;
+        defer parsed.deinit();
+
+        const token_val = parsed.value.object.get("token") orelse return error.NoToken;
+        if (token_val != .string) return error.NoToken;
+
+        return try self.allocator.dupe(u8, token_val.string);
+    }
+
+    pub fn uploadVideo(self: *BskyClient, data: []const u8, filename: []const u8) ![]const u8 {
+        if (self.did == null) return error.NotLoggedIn;
+
+        // get service auth token
+        const service_token = try self.getServiceAuth();
+        defer self.allocator.free(service_token);
+
+        var client = self.httpClient();
+        defer client.deinit();
+
+        var url_buf: [512]u8 = undefined;
+        const url = std.fmt.bufPrint(&url_buf, "https://video.bsky.app/xrpc/app.bsky.video.uploadVideo?did={s}&name={s}", .{ self.did.?, filename }) catch return error.UrlTooLong;
+
+        var auth_buf: [512]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{service_token}) catch return error.AuthTooLong;
+
+        var aw: Io.Writer.Allocating = .init(self.allocator);
+        defer aw.deinit();
+
+        const result = client.fetch(.{
+            .location = .{ .url = url },
+            .method = .POST,
+            .headers = .{
+                .content_type = .{ .override = "video/mp4" },
+                .authorization = .{ .override = auth_header },
+            },
+            .payload = data,
+            .response_writer = &aw.writer,
+        }) catch |err| {
+            std.debug.print("upload video failed: {}\n", .{err});
+            return err;
+        };
+
+        if (result.status != .ok) {
+            const err_response = aw.toArrayList();
+            std.debug.print("upload video failed with status: {} - {s}\n", .{ result.status, err_response.items });
+            return error.VideoUploadFailed;
+        }
+
+        const response = aw.toArrayList();
+        const parsed = json.parseFromSlice(json.Value, self.allocator, response.items, .{}) catch return error.ParseError;
+        defer parsed.deinit();
+
+        const job_status = parsed.value.object.get("jobStatus") orelse return error.NoJobStatus;
+        if (job_status != .object) return error.NoJobStatus;
+
+        const job_id_val = job_status.object.get("jobId") orelse return error.NoJobId;
+        if (job_id_val != .string) return error.NoJobId;
+
+        return try self.allocator.dupe(u8, job_id_val.string);
+    }
+
+    pub fn waitForVideo(self: *BskyClient, job_id: []const u8) ![]const u8 {
+        const service_token = try self.getServiceAuth();
+        defer self.allocator.free(service_token);
+
+        var url_buf: [512]u8 = undefined;
+        const url = std.fmt.bufPrint(&url_buf, "https://video.bsky.app/xrpc/app.bsky.video.getJobStatus?jobId={s}", .{job_id}) catch return error.UrlTooLong;
+
+        var auth_buf: [512]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{service_token}) catch return error.AuthTooLong;
+
+        var attempts: u32 = 0;
+        while (attempts < 60) : (attempts += 1) {
+            var client = self.httpClient();
+            defer client.deinit();
+
+            var aw: Io.Writer.Allocating = .init(self.allocator);
+            defer aw.deinit();
+
+            const result = client.fetch(.{
+                .location = .{ .url = url },
+                .method = .GET,
+                .headers = .{ .authorization = .{ .override = auth_header } },
+                .response_writer = &aw.writer,
+            }) catch |err| {
+                std.debug.print("get job status failed: {}\n", .{err});
+                return err;
+            };
+
+            if (result.status != .ok) {
+                std.debug.print("get job status failed with status: {}\n", .{result.status});
+                return error.JobStatusFailed;
+            }
+
+            const response = aw.toArrayList();
+            const parsed = json.parseFromSlice(json.Value, self.allocator, response.items, .{}) catch return error.ParseError;
+            defer parsed.deinit();
+
+            const job_status = parsed.value.object.get("jobStatus") orelse return error.NoJobStatus;
+            if (job_status != .object) return error.NoJobStatus;
+
+            const state_val = job_status.object.get("state") orelse continue;
+            if (state_val != .string) continue;
+
+            if (mem.eql(u8, state_val.string, "JOB_STATE_COMPLETED")) {
+                const blob = job_status.object.get("blob") orelse return error.NoBlobRef;
+                if (blob != .object) return error.NoBlobRef;
+                return json.Stringify.valueAlloc(self.allocator, blob, .{}) catch return error.SerializeError;
+            } else if (mem.eql(u8, state_val.string, "JOB_STATE_FAILED")) {
+                std.debug.print("video processing failed\n", .{});
+                return error.VideoProcessingFailed;
+            }
+
+            std.Thread.sleep(1 * std.time.ns_per_s);
+        }
+
+        return error.VideoTimeout;
+    }
+
+    pub fn createVideoQuotePost(self: *BskyClient, quote_uri: []const u8, quote_cid: []const u8, blob_json: []const u8, alt_text: []const u8) !void {
+        if (self.access_jwt == null or self.did == null) return error.NotLoggedIn;
+
+        var client = self.httpClient();
+        defer client.deinit();
+
+        var body_buf: std.ArrayList(u8) = .{};
+        defer body_buf.deinit(self.allocator);
+
+        var ts_buf: [30]u8 = undefined;
+        try body_buf.print(self.allocator,
+            \\{{"repo":"{s}","collection":"app.bsky.feed.post","record":{{"$type":"app.bsky.feed.post","text":"","createdAt":"{s}","embed":{{"$type":"app.bsky.embed.recordWithMedia","record":{{"$type":"app.bsky.embed.record","record":{{"uri":"{s}","cid":"{s}"}}}},"media":{{"$type":"app.bsky.embed.video","video":{s},"alt":"{s}"}}}}}}}}
+        , .{ self.did.?, getIsoTimestamp(&ts_buf), quote_uri, quote_cid, blob_json, alt_text });
+
+        var auth_buf: [512]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{self.access_jwt.?}) catch return error.AuthTooLong;
+
+        var aw: Io.Writer.Allocating = .init(self.allocator);
+        defer aw.deinit();
+
+        const result = client.fetch(.{
+            .location = .{ .url = "https://bsky.social/xrpc/com.atproto.repo.createRecord" },
+            .method = .POST,
+            .headers = .{
+                .content_type = .{ .override = "application/json" },
+                .authorization = .{ .override = auth_header },
+            },
+            .payload = body_buf.items,
+            .response_writer = &aw.writer,
+        }) catch |err| {
+            std.debug.print("create video post failed: {}\n", .{err});
+            return err;
+        };
+
+        if (result.status != .ok) {
+            const response = aw.toArrayList();
+            std.debug.print("create video post failed with status: {} - {s}\n", .{ result.status, response.items });
+            return error.PostFailed;
+        }
+
+        std.debug.print("posted video successfully!\n", .{});
     }
 };
 
