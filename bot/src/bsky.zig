@@ -233,10 +233,14 @@ pub const BskyClient = struct {
     }
 
     pub fn fetchImage(self: *BskyClient, url: []const u8) ![]const u8 {
+        // use fresh client to avoid stale connection issues
+        var client: http.Client = .{ .allocator = self.allocator };
+        defer client.deinit();
+
         var aw: Io.Writer.Allocating = .init(self.allocator);
         errdefer aw.deinit();
 
-        const result = self.client.fetch(.{
+        const result = client.fetch(.{
             .location = .{ .url = url },
             .method = .GET,
             .response_writer = &aw.writer,
