@@ -25,15 +25,14 @@ pub const BskyClient = struct {
         if (self.did) |did| self.allocator.free(did);
     }
 
-    // create fresh http client for each request to avoid stale connections
-    fn freshClient(self: *BskyClient) http.Client {
+    fn httpClient(self: *BskyClient) http.Client {
         return .{ .allocator = self.allocator };
     }
 
     pub fn login(self: *BskyClient) !void {
         std.debug.print("logging in as {s}...\n", .{self.handle});
 
-        var client = self.freshClient();
+        var client = self.httpClient();
         defer client.deinit();
 
         var body_buf: std.ArrayList(u8) = .{};
@@ -80,7 +79,7 @@ pub const BskyClient = struct {
     pub fn uploadBlob(self: *BskyClient, data: []const u8, content_type: []const u8) ![]const u8 {
         if (self.access_jwt == null) return error.NotLoggedIn;
 
-        var client = self.freshClient();
+        var client = self.httpClient();
         defer client.deinit();
 
         var auth_buf: [512]u8 = undefined;
@@ -122,7 +121,7 @@ pub const BskyClient = struct {
     pub fn createQuotePost(self: *BskyClient, quote_uri: []const u8, quote_cid: []const u8, blob_json: []const u8, alt_text: []const u8) !void {
         if (self.access_jwt == null or self.did == null) return error.NotLoggedIn;
 
-        var client = self.freshClient();
+        var client = self.httpClient();
         defer client.deinit();
 
         var body_buf: std.ArrayList(u8) = .{};
@@ -165,7 +164,7 @@ pub const BskyClient = struct {
     pub fn getPostCid(self: *BskyClient, uri: []const u8) ![]const u8 {
         if (self.access_jwt == null) return error.NotLoggedIn;
 
-        var client = self.freshClient();
+        var client = self.httpClient();
         defer client.deinit();
 
         var parts = mem.splitScalar(u8, uri[5..], '/');
@@ -207,7 +206,7 @@ pub const BskyClient = struct {
     }
 
     pub fn fetchImage(self: *BskyClient, url: []const u8) ![]const u8 {
-        var client = self.freshClient();
+        var client = self.httpClient();
         defer client.deinit();
 
         var aw: Io.Writer.Allocating = .init(self.allocator);
