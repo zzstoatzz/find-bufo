@@ -11,25 +11,30 @@ pub const BskyClient = struct {
     app_password: []const u8,
     access_jwt: ?[]const u8 = null,
     did: ?[]const u8 = null,
-    client: http.Client,
 
     pub fn init(allocator: Allocator, handle: []const u8, app_password: []const u8) BskyClient {
         return .{
             .allocator = allocator,
             .handle = handle,
             .app_password = app_password,
-            .client = .{ .allocator = allocator },
         };
     }
 
     pub fn deinit(self: *BskyClient) void {
         if (self.access_jwt) |jwt| self.allocator.free(jwt);
         if (self.did) |did| self.allocator.free(did);
-        self.client.deinit();
+    }
+
+    // create fresh http client for each request to avoid stale connections
+    fn freshClient(self: *BskyClient) http.Client {
+        return .{ .allocator = self.allocator };
     }
 
     pub fn login(self: *BskyClient) !void {
         std.debug.print("logging in as {s}...\n", .{self.handle});
+
+        var client = self.freshClient();
+        defer client.deinit();
 
         var body_buf: std.ArrayList(u8) = .{};
         defer body_buf.deinit(self.allocator);
@@ -38,7 +43,7 @@ pub const BskyClient = struct {
         var aw: Io.Writer.Allocating = .init(self.allocator);
         defer aw.deinit();
 
-        const result = self.client.fetch(.{
+        const result = client.fetch(.{
             .location = .{ .url = "https://bsky.social/xrpc/com.atproto.server.createSession" },
             .method = .POST,
             .headers = .{ .content_type = .{ .override = "application/json" } },
@@ -75,13 +80,16 @@ pub const BskyClient = struct {
     pub fn uploadBlob(self: *BskyClient, data: []const u8, content_type: []const u8) ![]const u8 {
         if (self.access_jwt == null) return error.NotLoggedIn;
 
+        var client = self.freshClient();
+        defer client.deinit();
+
         var auth_buf: [512]u8 = undefined;
         const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{self.access_jwt.?}) catch return error.AuthTooLong;
 
         var aw: Io.Writer.Allocating = .init(self.allocator);
         defer aw.deinit();
 
-        const result = self.client.fetch(.{
+        const result = client.fetch(.{
             .location = .{ .url = "https://bsky.social/xrpc/com.atproto.repo.uploadBlob" },
             .method = .POST,
             .headers = .{
@@ -114,6 +122,9 @@ pub const BskyClient = struct {
     pub fn createQuotePost(self: *BskyClient, quote_uri: []const u8, quote_cid: []const u8, blob_json: []const u8, alt_text: []const u8) !void {
         if (self.access_jwt == null or self.did == null) return error.NotLoggedIn;
 
+        var client = self.freshClient();
+        defer client.deinit();
+
         var body_buf: std.ArrayList(u8) = .{};
         defer body_buf.deinit(self.allocator);
 
@@ -128,47 +139,7 @@ pub const BskyClient = struct {
         var aw: Io.Writer.Allocating = .init(self.allocator);
         defer aw.deinit();
 
-        const result = self.client.fetch(.{
-            .location = .{ .url = "https://bsky.social/xrpc/com.atproto.repo.createRecord" },
-            .method = .POST,
-            .headers = .{
-                .content_type = .{ .override = "application/json" },
-                .authorization = .{ .override = auth_header },
-            },
-            .payload = body_buf.items,
-            .response_writer = &aw.writer,
-        }) catch |err| {
-            std.debug.print("create post failed: {}\n", .{err});
-            return err;
-        };
-
-        if (result.status != .ok) {
-            const response = aw.toArrayList();
-            std.debug.print("create post failed with status: {} - {s}\n", .{ result.status, response.items });
-            return error.PostFailed;
-        }
-
-        std.debug.print("posted successfully!\n", .{});
-    }
-
-    pub fn createSimplePost(self: *BskyClient, text: []const u8, blob_json: []const u8, alt_text: []const u8) !void {
-        if (self.access_jwt == null or self.did == null) return error.NotLoggedIn;
-
-        var body_buf: std.ArrayList(u8) = .{};
-        defer body_buf.deinit(self.allocator);
-
-        var ts_buf: [30]u8 = undefined;
-        try body_buf.print(self.allocator,
-            \\{{"repo":"{s}","collection":"app.bsky.feed.post","record":{{"$type":"app.bsky.feed.post","text":"{s}","createdAt":"{s}","embed":{{"$type":"app.bsky.embed.images","images":[{{"image":{s},"alt":"{s}"}}]}}}}}}
-        , .{ self.did.?, text, getIsoTimestamp(&ts_buf), blob_json, alt_text });
-
-        var auth_buf: [512]u8 = undefined;
-        const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{self.access_jwt.?}) catch return error.AuthTooLong;
-
-        var aw: Io.Writer.Allocating = .init(self.allocator);
-        defer aw.deinit();
-
-        const result = self.client.fetch(.{
+        const result = client.fetch(.{
             .location = .{ .url = "https://bsky.social/xrpc/com.atproto.repo.createRecord" },
             .method = .POST,
             .headers = .{
@@ -194,6 +165,9 @@ pub const BskyClient = struct {
     pub fn getPostCid(self: *BskyClient, uri: []const u8) ![]const u8 {
         if (self.access_jwt == null) return error.NotLoggedIn;
 
+        var client = self.freshClient();
+        defer client.deinit();
+
         var parts = mem.splitScalar(u8, uri[5..], '/');
         const did = parts.next() orelse return error.InvalidUri;
         _ = parts.next();
@@ -208,7 +182,7 @@ pub const BskyClient = struct {
         var aw: Io.Writer.Allocating = .init(self.allocator);
         defer aw.deinit();
 
-        const result = self.client.fetch(.{
+        const result = client.fetch(.{
             .location = .{ .url = url },
             .method = .GET,
             .headers = .{ .authorization = .{ .override = auth_header } },
@@ -233,8 +207,7 @@ pub const BskyClient = struct {
     }
 
     pub fn fetchImage(self: *BskyClient, url: []const u8) ![]const u8 {
-        // use fresh client to avoid stale connection issues
-        var client: http.Client = .{ .allocator = self.allocator };
+        var client = self.freshClient();
         defer client.deinit();
 
         var aw: Io.Writer.Allocating = .init(self.allocator);
