@@ -362,28 +362,37 @@ pub const BskyClient = struct {
             return err;
         };
 
-        if (result.status != .ok) {
-            const err_response = aw.toArrayList();
-            std.debug.print("upload video failed with status: {} - {s}\n", .{ result.status, err_response.items });
+        const response = aw.toArrayList();
+        std.debug.print("upload video response ({s}): {s}\n", .{ @tagName(result.status), response.items });
+
+        // handle both .ok and .conflict (already_exists) as success
+        if (result.status != .ok and result.status != .conflict) {
+            std.debug.print("upload video failed with status: {}\n", .{result.status});
             return error.VideoUploadFailed;
         }
-
-        const response = aw.toArrayList();
-        std.debug.print("upload video response: {s}\n", .{response.items});
 
         const parsed = json.parseFromSlice(json.Value, self.allocator, response.items, .{}) catch return error.ParseError;
         defer parsed.deinit();
 
-        const job_status = parsed.value.object.get("jobStatus") orelse {
-            std.debug.print("no jobStatus in response\n", .{});
-            return error.NoJobStatus;
+        // for conflict responses, jobId is at root level; for ok responses, it's in jobStatus
+        var job_id_val: ?json.Value = null;
+        if (parsed.value.object.get("jobStatus")) |job_status| {
+            if (job_status == .object) {
+                job_id_val = job_status.object.get("jobId");
+            }
+        }
+        // fallback to root level jobId (conflict case)
+        if (job_id_val == null) {
+            job_id_val = parsed.value.object.get("jobId");
+        }
+
+        const job_id = job_id_val orelse {
+            std.debug.print("no jobId in response\n", .{});
+            return error.NoJobId;
         };
-        if (job_status != .object) return error.NoJobStatus;
+        if (job_id != .string) return error.NoJobId;
 
-        const job_id_val = job_status.object.get("jobId") orelse return error.NoJobId;
-        if (job_id_val != .string) return error.NoJobId;
-
-        return try self.allocator.dupe(u8, job_id_val.string);
+        return try self.allocator.dupe(u8, job_id.string);
     }
 
     pub fn waitForVideo(self: *BskyClient, job_id: []const u8) ![]const u8 {
