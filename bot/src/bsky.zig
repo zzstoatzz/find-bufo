@@ -352,7 +352,7 @@ pub const BskyClient = struct {
             .location = .{ .url = url },
             .method = .POST,
             .headers = .{
-                .content_type = .{ .override = "video/mp4" },
+                .content_type = .{ .override = "image/gif" },
                 .authorization = .{ .override = auth_header },
             },
             .payload = data,
@@ -369,10 +369,15 @@ pub const BskyClient = struct {
         }
 
         const response = aw.toArrayList();
+        std.debug.print("upload video response: {s}\n", .{response.items});
+
         const parsed = json.parseFromSlice(json.Value, self.allocator, response.items, .{}) catch return error.ParseError;
         defer parsed.deinit();
 
-        const job_status = parsed.value.object.get("jobStatus") orelse return error.NoJobStatus;
+        const job_status = parsed.value.object.get("jobStatus") orelse {
+            std.debug.print("no jobStatus in response\n", .{});
+            return error.NoJobStatus;
+        };
         if (job_status != .object) return error.NoJobStatus;
 
         const job_id_val = job_status.object.get("jobId") orelse return error.NoJobId;
