@@ -6,7 +6,7 @@ bluesky bot that listens to the jetstream firehose and quote-posts matching bufo
 
 1. connects to bluesky jetstream (firehose)
 2. for each post, checks if text contains an exact phrase matching a bufo name
-3. if matched, quote-posts with the corresponding bufo image (or posts without quote based on quote_chance)
+3. if matched, quote-posts with the corresponding bufo image
 
 ## matching logic
 
@@ -23,7 +23,6 @@ bluesky bot that listens to the jetstream firehose and quote-posts matching bufo
 | `MIN_PHRASE_WORDS` | `4` | minimum words in phrase to match |
 | `POSTING_ENABLED` | `false` | must be `true` to actually post |
 | `COOLDOWN_MINUTES` | `120` | don't repost same bufo within this time |
-| `QUOTE_CHANCE` | `0.5` | probability of quoting vs just posting with rkey |
 | `EXCLUDE_PATTERNS` | `...` | exclude bufos matching these patterns |
 | `JETSTREAM_ENDPOINT` | `jetstream2.us-east.bsky.network` | jetstream server |
 

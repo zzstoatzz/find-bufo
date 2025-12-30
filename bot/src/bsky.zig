@@ -117,9 +117,10 @@ pub const BskyClient = struct {
         var body_buf: std.ArrayList(u8) = .{};
         defer body_buf.deinit(self.allocator);
 
+        var ts_buf: [30]u8 = undefined;
         try body_buf.print(self.allocator,
             \\{{"repo":"{s}","collection":"app.bsky.feed.post","record":{{"$type":"app.bsky.feed.post","text":"","createdAt":"{s}","embed":{{"$type":"app.bsky.embed.recordWithMedia","record":{{"$type":"app.bsky.embed.record","record":{{"uri":"{s}","cid":"{s}"}}}},"media":{{"$type":"app.bsky.embed.images","images":[{{"image":{s},"alt":"{s}"}}]}}}}}}}}
-        , .{ self.did.?, getIsoTimestamp(), quote_uri, quote_cid, blob_json, alt_text });
+        , .{ self.did.?, getIsoTimestamp(&ts_buf), quote_uri, quote_cid, blob_json, alt_text });
 
         var auth_buf: [512]u8 = undefined;
         const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{self.access_jwt.?}) catch return error.AuthTooLong;
@@ -156,9 +157,10 @@ pub const BskyClient = struct {
         var body_buf: std.ArrayList(u8) = .{};
         defer body_buf.deinit(self.allocator);
 
+        var ts_buf: [30]u8 = undefined;
         try body_buf.print(self.allocator,
             \\{{"repo":"{s}","collection":"app.bsky.feed.post","record":{{"$type":"app.bsky.feed.post","text":"{s}","createdAt":"{s}","embed":{{"$type":"app.bsky.embed.images","images":[{{"image":{s},"alt":"{s}"}}]}}}}}}
-        , .{ self.did.?, text, getIsoTimestamp(), blob_json, alt_text });
+        , .{ self.did.?, text, getIsoTimestamp(&ts_buf), blob_json, alt_text });
 
         var auth_buf: [512]u8 = undefined;
         const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{self.access_jwt.?}) catch return error.AuthTooLong;
@@ -252,6 +254,22 @@ pub const BskyClient = struct {
     }
 };
 
-fn getIsoTimestamp() []const u8 {
-    return "2025-01-01T00:00:00.000Z";
+fn getIsoTimestamp(buf: *[30]u8) []const u8 {
+    const ts = std.time.timestamp();
+    const epoch_secs: u64 = @intCast(ts);
+    const epoch = std.time.epoch.EpochSeconds{ .secs = epoch_secs };
+    const day = epoch.getEpochDay();
+    const year_day = day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_secs = epoch.getDaySeconds();
+
+    const len = std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}.000Z", .{
+        year_day.year,
+        month_day.month.numeric(),
+        month_day.day_index + 1,
+        day_secs.getHoursIntoDay(),
+        day_secs.getMinutesIntoHour(),
+        day_secs.getSecondsIntoMinute(),
+    }) catch return "2025-01-01T00:00:00.000Z";
+    return buf[0..len.len];
 }

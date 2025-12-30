@@ -8,7 +8,6 @@ pub const Config = struct {
     min_phrase_words: u32,
     posting_enabled: bool,
     cooldown_minutes: u32,
-    quote_chance: f32,
     exclude_patterns: []const u8,
 
     pub fn fromEnv() Config {
@@ -19,7 +18,6 @@ pub const Config = struct {
             .min_phrase_words = parseU32(posix.getenv("MIN_PHRASE_WORDS"), 4),
             .posting_enabled = parseBool(posix.getenv("POSTING_ENABLED")),
             .cooldown_minutes = parseU32(posix.getenv("COOLDOWN_MINUTES"), 120),
-            .quote_chance = parseF32(posix.getenv("QUOTE_CHANCE"), 0.5),
             .exclude_patterns = posix.getenv("EXCLUDE_PATTERNS") orelse "what-have-you-done,what-have-i-done,sad,crying,cant-take",
         };
     }
@@ -28,13 +26,6 @@ pub const Config = struct {
 fn parseU32(str: ?[]const u8, default: u32) u32 {
     if (str) |s| {
         return std.fmt.parseInt(u32, s, 10) catch default;
-    }
-    return default;
-}
-
-fn parseF32(str: ?[]const u8, default: f32) f32 {
-    if (str) |s| {
-        return std.fmt.parseFloat(f32, s) catch default;
     }
     return default;
 }

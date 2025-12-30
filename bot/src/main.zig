@@ -18,7 +18,6 @@ const BotState = struct {
     bsky_client: bsky.BskyClient,
     recent_bufos: std.StringHashMap(i64), // name -> timestamp
     mutex: Thread.Mutex = .{},
-    rng: std.Random.DefaultPrng,
 };
 
 pub fn main() !void {
@@ -57,7 +56,6 @@ pub fn main() !void {
         .matcher = m,
         .bsky_client = bsky_client,
         .recent_bufos = std.StringHashMap(i64).init(allocator),
-        .rng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp())),
     };
     defer state.recent_bufos.deinit();
 
@@ -94,9 +92,6 @@ fn onPost(post: jetstream.Post) void {
             return;
         }
     }
-
-    // random quote chance
-    const should_quote = state.rng.random().float(f32) < state.config.quote_chance;
 
     // fetch bufo image
     const img_data = state.bsky_client.fetchImage(match.url) catch |err| {
@@ -136,30 +131,18 @@ fn onPost(post: jetstream.Post) void {
     }
     const alt_text = alt_buf[0..alt_len];
 
-    if (should_quote) {
-        // get post CID for quote
-        const cid = state.bsky_client.getPostCid(post.uri) catch |err| {
-            std.debug.print("failed to get post CID: {}\n", .{err});
-            return;
-        };
-        defer state.allocator.free(cid);
+    // get post CID for quote
+    const cid = state.bsky_client.getPostCid(post.uri) catch |err| {
+        std.debug.print("failed to get post CID: {}\n", .{err});
+        return;
+    };
+    defer state.allocator.free(cid);
 
-        state.bsky_client.createQuotePost(post.uri, cid, blob_json, alt_text) catch |err| {
-            std.debug.print("failed to create quote post: {}\n", .{err});
-            return;
-        };
-        std.debug.print("posted bufo quote: {s}\n", .{match.name});
-    } else {
-        // post without quote
-        var text_buf: [256]u8 = undefined;
-        const text = std.fmt.bufPrint(&text_buf, "matched {s} (not quoting to reduce spam)", .{post.rkey}) catch "matched a post";
-
-        state.bsky_client.createSimplePost(text, blob_json, alt_text) catch |err| {
-            std.debug.print("failed to create simple post: {}\n", .{err});
-            return;
-        };
-        std.debug.print("posted bufo (no quote): {s} for {s}\n", .{ match.name, post.rkey });
-    }
+    state.bsky_client.createQuotePost(post.uri, cid, blob_json, alt_text) catch |err| {
+        std.debug.print("failed to create quote post: {}\n", .{err});
+        return;
+    };
+    std.debug.print("posted bufo quote: {s}\n", .{match.name});
 
     // update cooldown cache
     state.recent_bufos.put(match.name, now) catch {};
