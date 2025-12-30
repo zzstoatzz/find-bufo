@@ -1,12 +1,12 @@
-# bufo-bot
+# bufo-bot (zig)
 
-bluesky bot that listens to the firehose and quote-posts matching bufo images.
+bluesky bot that listens to the jetstream firehose and quote-posts matching bufo images.
 
 ## how it works
 
 1. connects to bluesky jetstream (firehose)
 2. for each post, checks if text contains an exact phrase matching a bufo name
-3. if matched, quote-posts with the corresponding bufo image
+3. if matched, quote-posts with the corresponding bufo image (or posts without quote based on quote_chance)
 
 ## matching logic
 
@@ -23,21 +23,18 @@ bluesky bot that listens to the firehose and quote-posts matching bufo images.
 | `MIN_PHRASE_WORDS` | `4` | minimum words in phrase to match |
 | `POSTING_ENABLED` | `false` | must be `true` to actually post |
 | `COOLDOWN_MINUTES` | `120` | don't repost same bufo within this time |
-| `EXCLUDE_PATTERNS` | `sad,crying,...` | exclude bufos matching these patterns |
 | `QUOTE_CHANCE` | `0.5` | probability of quoting vs just posting with rkey |
+| `EXCLUDE_PATTERNS` | `...` | exclude bufos matching these patterns |
 | `JETSTREAM_ENDPOINT` | `jetstream2.us-east.bsky.network` | jetstream server |
 
 ## local dev
 
 ```bash
-# copy and edit .env
-cp .env.example .env
+# build
+zig build
 
 # run locally (dry run by default)
-uv run bufo-bot
-
-# or test matching against firehose
-uv run python -m bufo_bot.dry_run
+./zig-out/bin/bufo-bot
 ```
 
 ## deploy
@@ -51,9 +48,6 @@ fly deploy
 
 # enable posting
 fly secrets set POSTING_ENABLED=true -a bufo-bot
-
-# disable posting
-fly secrets set POSTING_ENABLED=false -a bufo-bot
 
 # check logs
 fly logs -a bufo-bot

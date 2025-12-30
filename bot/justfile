@@ -1,9 +1,16 @@
 # bot/justfile
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
+default:
+    @just --list
+
+# build the bot
+build:
+    zig build
+
 # run the bot locally
 run:
-    uv run bufo-bot
+    zig build run
 
 # deploy to fly.io
 deploy:

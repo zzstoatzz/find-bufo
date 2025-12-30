@@ -7,13 +7,12 @@ primary_region = "ewr"
 [env]
   JETSTREAM_ENDPOINT = "jetstream2.us-east.bsky.network"
 
-# This is a worker process, not an HTTP service
-# It runs continuously and doesn't expose any ports
+# worker process - no http service
 [processes]
-  worker = "uv run bufo-bot"
+  worker = "./bufo-bot"
 
 [[vm]]
-  memory = "1024mb"
+  memory = "256mb"
   cpu_kind = "shared"
   cpus = 1
 
