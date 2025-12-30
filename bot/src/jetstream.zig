@@ -76,13 +76,8 @@ pub const JetstreamClient = struct {
 const Handler = struct {
     allocator: Allocator,
     callback: *const fn (Post) void,
-    msg_count: usize = 0,
 
     pub fn serverMessage(self: *Handler, data: []const u8) !void {
-        self.msg_count += 1;
-        if (self.msg_count % 1000 == 1) {
-            std.debug.print("jetstream: processed {} messages\n", .{self.msg_count});
-        }
         self.processMessage(data) catch |err| {
             if (err != error.NotAPost) {
                 std.debug.print("message processing error: {}\n", .{err});
