@@ -48,6 +48,7 @@ pub const JetstreamClient = struct {
             .host = self.host,
             .port = 443,
             .tls = true,
+            .max_size = 1024 * 1024, // 1MB - some jetstream messages are large
         }) catch |err| {
             std.debug.print("websocket client init failed: {}\n", .{err});
             return err;
