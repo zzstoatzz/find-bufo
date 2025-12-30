@@ -74,7 +74,7 @@ fn onPost(post: jetstream.Post) void {
     // check for match
     const match = state.matcher.findMatch(post.text) orelse return;
 
-    std.debug.print("match: '{s}' -> {s}\n", .{ match.phrase, match.name });
+    std.debug.print("match: {s}\n", .{match.name});
 
     if (!state.config.posting_enabled) {
         std.debug.print("posting disabled, skipping\n", .{});
@@ -148,7 +148,7 @@ fn onPost(post: jetstream.Post) void {
             std.debug.print("failed to create quote post: {}\n", .{err});
             return;
         };
-        std.debug.print("posted bufo quote: {s} (phrase: {s})\n", .{ match.name, match.phrase });
+        std.debug.print("posted bufo quote: {s}\n", .{match.name});
     } else {
         // post without quote
         var text_buf: [256]u8 = undefined;

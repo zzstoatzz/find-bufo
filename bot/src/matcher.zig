@@ -11,7 +11,6 @@ pub const Bufo = struct {
 pub const Match = struct {
     name: []const u8,
     url: []const u8,
-    phrase: []const u8,
 };
 
 pub const Matcher = struct {
@@ -74,20 +73,9 @@ pub const Matcher = struct {
 
         for (self.bufos.items) |bufo| {
             if (containsPhrase(words.items, bufo.phrase)) {
-                var phrase_buf: [256]u8 = undefined;
-                var phrase_len: usize = 0;
-                for (bufo.phrase, 0..) |word, j| {
-                    if (j > 0) {
-                        phrase_buf[phrase_len] = ' ';
-                        phrase_len += 1;
-                    }
-                    @memcpy(phrase_buf[phrase_len .. phrase_len + word.len], word);
-                    phrase_len += word.len;
-                }
                 return .{
                     .name = bufo.name,
                     .url = bufo.url,
-                    .phrase = phrase_buf[0..phrase_len],
                 };
             }
         }
