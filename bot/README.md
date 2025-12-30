@@ -24,6 +24,7 @@ bluesky bot that listens to the firehose and quote-posts matching bufo images.
 | `POSTING_ENABLED` | `false` | must be `true` to actually post |
 | `COOLDOWN_MINUTES` | `120` | don't repost same bufo within this time |
 | `EXCLUDE_PATTERNS` | `sad,crying,...` | exclude bufos matching these patterns |
+| `QUOTE_CHANCE` | `0.5` | probability of quoting vs just posting with rkey |
 | `JETSTREAM_ENDPOINT` | `jetstream2.us-east.bsky.network` | jetstream server |
 
 ## local dev

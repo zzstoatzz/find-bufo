@@ -1,4 +1,5 @@
 import logging
+import random
 from datetime import datetime, timezone
 
 import httpx
@@ -135,6 +136,44 @@ def quote_post_with_bufo(client: Client, post: Post, match: BufoMatch) -> None:
         logger.error(f"failed to send post: {e}")
 
 
+def post_bufo_without_quote(client: Client, post: Post, match: BufoMatch) -> None:
+    """post bufo image with rkey reference (no quote) to reduce spam"""
+    logger.info(f"fetching bufo image: {match.url}")
+
+    try:
+        img_data = httpx.get(match.url, timeout=10).content
+    except Exception as e:
+        logger.error(f"failed to fetch bufo image: {e}")
+        return
+
+    try:
+        uploaded = client.upload_blob(img_data)
+    except Exception as e:
+        logger.error(f"failed to upload blob: {e}")
+        return
+
+    # extract rkey from URI
+    rkey = post.uri.split("/")[-1]
+
+    # build embed with just the image
+    embed = models.AppBskyEmbedImages.Main(
+        images=[
+            models.AppBskyEmbedImages.Image(
+                image=uploaded.blob,
+                alt=match.name.replace("-", " "),
+            )
+        ]
+    )
+
+    # post with rkey reference
+    text = f"matched {rkey} 🐸 (not quoting to reduce spam)"
+    try:
+        client.send_post(text=text, embed=embed)
+        logger.info(f"posted bufo (no quote): {match.name} for {rkey}")
+    except Exception as e:
+        logger.error(f"failed to send post: {e}")
+
+
 def run_bot():
     """main bot loop"""
     logger.info("starting bufo bot...")
@@ -181,7 +220,11 @@ def run_bot():
                 logger.info(f"cooldown: {match.name} posted recently, skipping")
                 continue
 
-            quote_post_with_bufo(client, post, match)
+            # randomly decide whether to quote or just post with rkey
+            if random.random() < settings.quote_chance:
+                quote_post_with_bufo(client, post, match)
+            else:
+                post_bufo_without_quote(client, post, match)
             recent_bufos.add(match.name)  # add to local cache immediately
 
 

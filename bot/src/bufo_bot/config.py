@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     # exclude bufos matching these patterns (comma-separated regex)
     exclude_patterns: str = "what-have-you-done,what-have-i-done,sad,crying,cant-take"
 
+    # probability of quoting the matched post (0.0-1.0)
+    # when not quoting, posts bufo with rkey reference instead
+    quote_chance: float = 0.5
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
