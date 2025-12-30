@@ -1,4 +1,4 @@
-# bufo-bot (zig)
+# bufo-bot
 
 bluesky bot that listens to the jetstream firehose and quote-posts matching bufo images.
 
@@ -10,7 +10,7 @@ bluesky bot that listens to the jetstream firehose and quote-posts matching bufo
 
 ## matching logic
 
-- extracts phrase from bufo filename (e.g., `bufo-hop-in-we-re-going` -> `hop in we re going`)
+- extracts phrase from bufo filename (e.g., `bufo-let-them-eat-cake` -> `let them eat cake`)
 - requires exact consecutive word match in post text
 - configurable minimum phrase length (default: 4 words)
 
