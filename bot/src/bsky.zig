@@ -363,7 +363,6 @@ pub const BskyClient = struct {
         };
 
         const response = aw.toArrayList();
-        std.debug.print("upload video response ({s}): {s}\n", .{ @tagName(result.status), response.items });
 
         // handle both .ok and .conflict (already_exists) as success
         if (result.status != .ok and result.status != .conflict) {
