@@ -11,6 +11,7 @@ pub const BskyClient = struct {
     app_password: []const u8,
     access_jwt: ?[]const u8 = null,
     did: ?[]const u8 = null,
+    pds_host: ?[]const u8 = null,
 
     pub fn init(allocator: Allocator, handle: []const u8, app_password: []const u8) BskyClient {
         return .{
@@ -23,6 +24,7 @@ pub const BskyClient = struct {
     pub fn deinit(self: *BskyClient) void {
         if (self.access_jwt) |jwt| self.allocator.free(jwt);
         if (self.did) |did| self.allocator.free(did);
+        if (self.pds_host) |host| self.allocator.free(host);
     }
 
     fn httpClient(self: *BskyClient) http.Client {
@@ -73,7 +75,63 @@ pub const BskyClient = struct {
         self.access_jwt = try self.allocator.dupe(u8, jwt_val.string);
         self.did = try self.allocator.dupe(u8, did_val.string);
 
-        std.debug.print("logged in as {s} (did: {s})\n", .{ self.handle, self.did.? });
+        // fetch PDS host from PLC directory
+        try self.fetchPdsHost();
+
+        std.debug.print("logged in as {s} (did: {s}, pds: {s})\n", .{ self.handle, self.did.?, self.pds_host.? });
+    }
+
+    fn fetchPdsHost(self: *BskyClient) !void {
+        var client = self.httpClient();
+        defer client.deinit();
+
+        var url_buf: [256]u8 = undefined;
+        const url = std.fmt.bufPrint(&url_buf, "https://plc.directory/{s}", .{self.did.?}) catch return error.UrlTooLong;
+
+        var aw: Io.Writer.Allocating = .init(self.allocator);
+        defer aw.deinit();
+
+        const result = client.fetch(.{
+            .location = .{ .url = url },
+            .method = .GET,
+            .response_writer = &aw.writer,
+        }) catch |err| {
+            std.debug.print("fetch PDS host failed: {}\n", .{err});
+            return err;
+        };
+
+        if (result.status != .ok) {
+            std.debug.print("fetch PDS host failed with status: {}\n", .{result.status});
+            return error.PlcLookupFailed;
+        }
+
+        const response = aw.toArrayList();
+        const parsed = json.parseFromSlice(json.Value, self.allocator, response.items, .{}) catch return error.ParseError;
+        defer parsed.deinit();
+
+        // find the atproto_pds service endpoint
+        const service = parsed.value.object.get("service") orelse return error.NoService;
+        if (service != .array) return error.NoService;
+
+        for (service.array.items) |svc| {
+            if (svc != .object) continue;
+            const id_val = svc.object.get("id") orelse continue;
+            if (id_val != .string) continue;
+            if (!mem.eql(u8, id_val.string, "#atproto_pds")) continue;
+
+            const endpoint_val = svc.object.get("serviceEndpoint") orelse continue;
+            if (endpoint_val != .string) continue;
+
+            // extract host from URL like "https://phellinus.us-west.host.bsky.network"
+            const endpoint = endpoint_val.string;
+            const prefix = "https://";
+            if (mem.startsWith(u8, endpoint, prefix)) {
+                self.pds_host = try self.allocator.dupe(u8, endpoint[prefix.len..]);
+                return;
+            }
+        }
+
+        return error.NoPdsService;
     }
 
     pub fn uploadBlob(self: *BskyClient, data: []const u8, content_type: []const u8) ![]const u8 {
@@ -231,13 +289,13 @@ pub const BskyClient = struct {
     }
 
     pub fn getServiceAuth(self: *BskyClient) ![]const u8 {
-        if (self.access_jwt == null or self.did == null) return error.NotLoggedIn;
+        if (self.access_jwt == null or self.did == null or self.pds_host == null) return error.NotLoggedIn;
 
         var client = self.httpClient();
         defer client.deinit();
 
-        var url_buf: [256]u8 = undefined;
-        const url = std.fmt.bufPrint(&url_buf, "https://bsky.social/xrpc/com.atproto.server.getServiceAuth?aud=did:web:bsky.social&lxm=com.atproto.repo.uploadBlob", .{}) catch return error.UrlTooLong;
+        var url_buf: [512]u8 = undefined;
+        const url = std.fmt.bufPrint(&url_buf, "https://bsky.social/xrpc/com.atproto.server.getServiceAuth?aud=did:web:{s}&lxm=com.atproto.repo.uploadBlob", .{self.pds_host.?}) catch return error.UrlTooLong;
 
         var auth_buf: [512]u8 = undefined;
         const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{self.access_jwt.?}) catch return error.AuthTooLong;
