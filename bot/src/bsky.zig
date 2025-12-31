@@ -163,6 +163,10 @@ pub const BskyClient = struct {
         if (result.status != .ok) {
             const err_response = aw.toArrayList();
             std.debug.print("upload blob failed with status: {} - {s}\n", .{ result.status, err_response.items });
+            // check for expired token
+            if (mem.indexOf(u8, err_response.items, "ExpiredToken") != null) {
+                return error.ExpiredToken;
+            }
             return error.UploadFailed;
         }
 
@@ -316,6 +320,10 @@ pub const BskyClient = struct {
         if (result.status != .ok) {
             const err_response = aw.toArrayList();
             std.debug.print("get service auth failed with status: {} - {s}\n", .{ result.status, err_response.items });
+            // check for expired token
+            if (mem.indexOf(u8, err_response.items, "ExpiredToken") != null) {
+                return error.ExpiredToken;
+            }
             return error.ServiceAuthFailed;
         }
 
