@@ -2,7 +2,7 @@
 
 hybrid semantic + keyword search for the bufo zone
 
-**live at: [find-bufo.fly.dev](https://find-bufo.fly.dev/)**
+**live at: [find-bufo.com](https://find-bufo.com/)**
 
 ## overview
 

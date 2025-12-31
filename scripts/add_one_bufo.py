@@ -83,7 +83,7 @@ async def upload_to_turbopuffer(filename: str, embedding: list[float], api_key: 
     """Upload single embedding to turbopuffer"""
     file_hash = hashlib.sha256(filename.encode()).hexdigest()[:16]
     name = filename.rsplit(".", 1)[0]
-    url = f"https://find-bufo.fly.dev/static/{filename}"
+    url = f"https://find-bufo.com/static/{filename}"
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
