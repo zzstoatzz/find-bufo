@@ -9,6 +9,7 @@ pub const Config = struct {
     posting_enabled: bool,
     cooldown_minutes: u32,
     exclude_patterns: []const u8,
+    stats_port: u16,
 
     pub fn fromEnv() Config {
         return .{
@@ -19,9 +20,17 @@ pub const Config = struct {
             .posting_enabled = parseBool(posix.getenv("POSTING_ENABLED")),
             .cooldown_minutes = parseU32(posix.getenv("COOLDOWN_MINUTES"), 120),
             .exclude_patterns = posix.getenv("EXCLUDE_PATTERNS") orelse "what-have-you-done,what-have-i-done,sad,crying,cant-take",
+            .stats_port = parseU16(posix.getenv("STATS_PORT"), 8080),
         };
     }
 };
+
+fn parseU16(str: ?[]const u8, default: u16) u16 {
+    if (str) |s| {
+        return std.fmt.parseInt(u16, s, 10) catch default;
+    }
+    return default;
+}
 
 fn parseU32(str: ?[]const u8, default: u32) u32 {
     if (str) |s| {
