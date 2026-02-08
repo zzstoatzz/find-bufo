@@ -4,10 +4,12 @@ const json = std.json;
 const http = std.http;
 const Thread = std.Thread;
 const Allocator = mem.Allocator;
+const zat = @import("zat");
 const config = @import("config.zig");
 const matcher = @import("matcher.zig");
 const jetstream = @import("jetstream.zig");
 const bsky = @import("bsky.zig");
+const stats = @import("stats.zig");
 
 var global_state: ?*BotState = null;
 
@@ -18,6 +20,7 @@ const BotState = struct {
     bsky_client: bsky.BskyClient,
     recent_bufos: std.StringHashMap(i64), // name -> timestamp
     mutex: Thread.Mutex = .{},
+    stats: stats.Stats,
 };
 
 pub fn main() !void {
@@ -49,6 +52,11 @@ pub fn main() !void {
         std.debug.print("posting disabled, running in dry-run mode\n", .{});
     }
 
+    // init stats
+    var bot_stats = stats.Stats.init(allocator);
+    defer bot_stats.deinit();
+    bot_stats.setBufosLoaded(@intCast(m.count()));
+
     // init state
     var state = BotState{
         .allocator = allocator,
@@ -56,22 +64,40 @@ pub fn main() !void {
         .matcher = m,
         .bsky_client = bsky_client,
         .recent_bufos = std.StringHashMap(i64).init(allocator),
+        .stats = bot_stats,
     };
     defer state.recent_bufos.deinit();
 
     global_state = &state;
 
+    // start stats server on background thread
+    var stats_server = stats.StatsServer.init(allocator, &state.stats, cfg.stats_port);
+    const stats_thread = Thread.spawn(.{}, stats.StatsServer.run, .{&stats_server}) catch |err| {
+        std.debug.print("failed to start stats server: {}\n", .{err});
+        return err;
+    };
+    defer stats_thread.join();
+
     // start jetstream consumer
-    var js = jetstream.JetstreamClient.init(allocator, cfg.jetstream_endpoint, onPost);
-    js.run();
+    var handler = jetstream.PostHandler{ .callback = onPost };
+    var client = zat.JetstreamClient.init(allocator, .{
+        .host = cfg.jetstream_endpoint,
+        .wanted_collections = &.{"app.bsky.feed.post"},
+    });
+    defer client.deinit();
+    client.subscribe(&handler);
 }
 
 fn onPost(post: jetstream.Post) void {
     const state = global_state orelse return;
 
+    state.stats.incPostsChecked();
+
     // check for match
     const match = state.matcher.findMatch(post.text) orelse return;
 
+    state.stats.incMatchesFound();
+    state.stats.incBufoMatch(match.name, match.url);
     std.debug.print("match: {s}\n", .{match.name});
 
     if (!state.config.posting_enabled) {
@@ -88,6 +114,7 @@ fn onPost(post: jetstream.Post) void {
 
     if (state.recent_bufos.get(match.name)) |last_posted| {
         if (now - last_posted < cooldown_secs) {
+            state.stats.incCooldownsHit();
             std.debug.print("cooldown: {s} posted recently, skipping\n", .{match.name});
             return;
         }
@@ -99,12 +126,16 @@ fn onPost(post: jetstream.Post) void {
             std.debug.print("token expired, re-logging in...\n", .{});
             state.bsky_client.login() catch |login_err| {
                 std.debug.print("failed to re-login: {}\n", .{login_err});
+                state.stats.incErrors();
                 return;
             };
             std.debug.print("re-login successful, retrying post...\n", .{});
             tryPost(state, post, match, now) catch |retry_err| {
                 std.debug.print("retry failed: {}\n", .{retry_err});
+                state.stats.incErrors();
             };
+        } else {
+            state.stats.incErrors();
         }
     };
 }
@@ -161,6 +192,7 @@ fn tryPost(state: *BotState, post: jetstream.Post, match: matcher.Match, now: i6
         try state.bsky_client.createQuotePost(post.uri, cid, blob_json, alt_text);
     }
     std.debug.print("posted bufo quote: {s}\n", .{match.name});
+    state.stats.incPostsCreated();
 
     // update cooldown cache
     state.recent_bufos.put(match.name, now) catch {};
