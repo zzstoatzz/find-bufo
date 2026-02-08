@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const websocket = b.dependency("websocket", .{
+    const zat = b.dependency("zat", .{
         .target = target,
         .optimize = optimize,
     });
@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "websocket", .module = websocket.module("websocket") },
+                .{ .name = "zat", .module = zat.module("zat") },
             },
         }),
     });

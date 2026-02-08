@@ -4,6 +4,7 @@ const json = std.json;
 const http = std.http;
 const Thread = std.Thread;
 const Allocator = mem.Allocator;
+const zat = @import("zat");
 const config = @import("config.zig");
 const matcher = @import("matcher.zig");
 const jetstream = @import("jetstream.zig");
@@ -78,8 +79,13 @@ pub fn main() !void {
     defer stats_thread.join();
 
     // start jetstream consumer
-    var js = jetstream.JetstreamClient.init(allocator, cfg.jetstream_endpoint, onPost);
-    js.run();
+    var handler = jetstream.PostHandler{ .callback = onPost };
+    var client = zat.JetstreamClient.init(allocator, .{
+        .host = cfg.jetstream_endpoint,
+        .wanted_collections = &.{"app.bsky.feed.post"},
+    });
+    defer client.deinit();
+    client.subscribe(&handler);
 }
 
 fn onPost(post: jetstream.Post) void {

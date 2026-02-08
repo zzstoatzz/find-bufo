@@ -1,8 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 const json = std.json;
-const posix = std.posix;
-const Allocator = mem.Allocator;
+const zat = @import("zat");
 
 const nsfw_labels: []const []const u8 = &.{
     "porn",
@@ -27,7 +26,6 @@ const nsfw_keywords: []const []const u8 = &.{
     "#fetish",
     "#kink",
 };
-const websocket = @import("websocket");
 
 pub const Post = struct {
     uri: []const u8,
@@ -36,164 +34,56 @@ pub const Post = struct {
     rkey: []const u8,
 };
 
-pub const JetstreamClient = struct {
-    allocator: Allocator,
-    host: []const u8,
+pub const PostHandler = struct {
     callback: *const fn (Post) void,
 
-    pub fn init(allocator: Allocator, host: []const u8, callback: *const fn (Post) void) JetstreamClient {
-        return .{
-            .allocator = allocator,
-            .host = host,
-            .callback = callback,
-        };
-    }
-
-    pub fn run(self: *JetstreamClient) void {
-        // exponential backoff: 1s -> 2s -> 4s -> ... -> 60s cap
-        var backoff: u64 = 1;
-        const max_backoff: u64 = 60;
-
-        while (true) {
-            self.connect() catch |err| {
-                std.debug.print("jetstream error: {}, reconnecting in {}s...\n", .{ err, backoff });
-            };
-            posix.nanosleep(backoff, 0);
-            backoff = @min(backoff * 2, max_backoff);
+    pub fn onEvent(self: *PostHandler, event: zat.JetstreamEvent) void {
+        switch (event) {
+            .commit => |c| self.handleCommit(c),
+            else => {},
         }
     }
 
-    fn connect(self: *JetstreamClient) !void {
-        const path = "/subscribe?wantedCollections=app.bsky.feed.post";
-
-        std.debug.print("connecting to wss://{s}{s}\n", .{ self.host, path });
-
-        var client = websocket.Client.init(self.allocator, .{
-            .host = self.host,
-            .port = 443,
-            .tls = true,
-            .max_size = 1024 * 1024, // 1MB - some jetstream messages are large
-        }) catch |err| {
-            std.debug.print("websocket client init failed: {}\n", .{err});
-            return err;
-        };
-        defer client.deinit();
-
-        var host_header_buf: [256]u8 = undefined;
-        const host_header = std.fmt.bufPrint(&host_header_buf, "Host: {s}\r\n", .{self.host}) catch self.host;
-
-        client.handshake(path, .{ .headers = host_header }) catch |err| {
-            std.debug.print("websocket handshake failed: {}\n", .{err});
-            return err;
-        };
-
-        std.debug.print("jetstream connected!\n", .{});
-
-        var handler = Handler{ .allocator = self.allocator, .callback = self.callback };
-        client.readLoop(&handler) catch |err| {
-            std.debug.print("websocket read loop error: {}\n", .{err});
-            return err;
-        };
-    }
-};
-
-const Handler = struct {
-    allocator: Allocator,
-    callback: *const fn (Post) void,
-
-    pub fn serverMessage(self: *Handler, data: []const u8) !void {
-        self.processMessage(data) catch |err| {
-            if (err != error.NotAPost) {
-                std.debug.print("message processing error: {}\n", .{err});
-            }
-        };
+    pub fn onError(_: *PostHandler, err: anyerror) void {
+        std.debug.print("jetstream error: {s}\n", .{@errorName(err)});
     }
 
-    pub fn close(_: *Handler) void {
-        std.debug.print("jetstream connection closed\n", .{});
-    }
+    fn handleCommit(self: *PostHandler, c: zat.jetstream.CommitEvent) void {
+        if (c.operation != .create) return;
 
-    fn processMessage(self: *Handler, payload: []const u8) !void {
-        // jetstream format:
-        // { "did": "...", "kind": "commit", "commit": { "collection": "app.bsky.feed.post", "rkey": "...", "record": { "text": "...", ... } } }
-        const parsed = json.parseFromSlice(json.Value, self.allocator, payload, .{}) catch return error.ParseError;
-        defer parsed.deinit();
+        const record = c.record orelse return;
 
-        const root = parsed.value.object;
+        if (hasNsfwLabels(record)) return;
 
-        // check kind
-        const kind = root.get("kind") orelse return error.NotAPost;
-        if (kind != .string or !mem.eql(u8, kind.string, "commit")) return error.NotAPost;
+        const text = zat.json.getString(record, "text") orelse return;
 
-        // get did
-        const did_val = root.get("did") orelse return error.NotAPost;
-        if (did_val != .string) return error.NotAPost;
+        if (hasNsfwKeywords(text)) return;
 
-        // get commit
-        const commit = root.get("commit") orelse return error.NotAPost;
-        if (commit != .object) return error.NotAPost;
-
-        // check collection
-        const collection = commit.object.get("collection") orelse return error.NotAPost;
-        if (collection != .string or !mem.eql(u8, collection.string, "app.bsky.feed.post")) return error.NotAPost;
-
-        // check operation (create only)
-        const operation = commit.object.get("operation") orelse return error.NotAPost;
-        if (operation != .string or !mem.eql(u8, operation.string, "create")) return error.NotAPost;
-
-        // get rkey
-        const rkey_val = commit.object.get("rkey") orelse return error.NotAPost;
-        if (rkey_val != .string) return error.NotAPost;
-
-        // get record
-        const record = commit.object.get("record") orelse return error.NotAPost;
-        if (record != .object) return error.NotAPost;
-
-        // check for nsfw labels
-        if (hasNsfwLabels(record.object)) return error.NotAPost;
-
-        // get text
-        const text_val = record.object.get("text") orelse return error.NotAPost;
-        if (text_val != .string) return error.NotAPost;
-
-        // check for nsfw keywords in text
-        if (hasNsfwKeywords(text_val.string)) return error.NotAPost;
-
-        // construct uri
         var uri_buf: [256]u8 = undefined;
-        const uri = std.fmt.bufPrint(&uri_buf, "at://{s}/app.bsky.feed.post/{s}", .{ did_val.string, rkey_val.string }) catch return error.UriTooLong;
+        const uri = std.fmt.bufPrint(&uri_buf, "at://{s}/app.bsky.feed.post/{s}", .{ c.did, c.rkey }) catch return;
 
         self.callback(.{
             .uri = uri,
-            .text = text_val.string,
-            .did = did_val.string,
-            .rkey = rkey_val.string,
+            .text = text,
+            .did = c.did,
+            .rkey = c.rkey,
         });
     }
 };
 
-fn hasNsfwLabels(record: json.ObjectMap) bool {
-    // labels structure: { "values": [{ "val": "porn" }, ...] }
-    const labels = record.get("labels") orelse return false;
-    if (labels != .object) return false;
+fn hasNsfwLabels(record: json.Value) bool {
+    const values = zat.json.getArray(record, "labels.values") orelse return false;
 
-    const values = labels.object.get("values") orelse return false;
-    if (values != .array) return false;
-
-    for (values.array.items) |item| {
-        if (item != .object) continue;
-        const val = item.object.get("val") orelse continue;
-        if (val != .string) continue;
-
+    for (values) |item| {
+        const val = zat.json.getString(item, "val") orelse continue;
         for (nsfw_labels) |label| {
-            if (mem.eql(u8, val.string, label)) return true;
+            if (mem.eql(u8, val, label)) return true;
         }
     }
     return false;
 }
 
 fn hasNsfwKeywords(text: []const u8) bool {
-    // convert to lowercase for case-insensitive matching
     var lower_buf: [4096]u8 = undefined;
     const len = @min(text.len, lower_buf.len);
     for (text[0..len], 0..) |c, i| {
