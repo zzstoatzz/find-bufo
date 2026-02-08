@@ -3,6 +3,30 @@ const mem = std.mem;
 const json = std.json;
 const posix = std.posix;
 const Allocator = mem.Allocator;
+
+const nsfw_labels: []const []const u8 = &.{
+    "porn",
+    "sexual",
+    "nudity",
+    "nsfl",
+    "gore",
+};
+
+// hashtags/keywords to filter in post text (lowercase)
+const nsfw_keywords: []const []const u8 = &.{
+    "#nsfw",
+    "#porn",
+    "#xxx",
+    "#18+",
+    "#adult",
+    "#onlyfans",
+    "#sex",
+    "#nude",
+    "#nudes",
+    "#naked",
+    "#fetish",
+    "#kink",
+};
 const websocket = @import("websocket");
 
 pub const Post = struct {
@@ -125,9 +149,15 @@ const Handler = struct {
         const record = commit.object.get("record") orelse return error.NotAPost;
         if (record != .object) return error.NotAPost;
 
+        // check for nsfw labels
+        if (hasNsfwLabels(record.object)) return error.NotAPost;
+
         // get text
         const text_val = record.object.get("text") orelse return error.NotAPost;
         if (text_val != .string) return error.NotAPost;
+
+        // check for nsfw keywords in text
+        if (hasNsfwKeywords(text_val.string)) return error.NotAPost;
 
         // construct uri
         var uri_buf: [256]u8 = undefined;
@@ -141,3 +171,38 @@ const Handler = struct {
         });
     }
 };
+
+fn hasNsfwLabels(record: json.ObjectMap) bool {
+    // labels structure: { "values": [{ "val": "porn" }, ...] }
+    const labels = record.get("labels") orelse return false;
+    if (labels != .object) return false;
+
+    const values = labels.object.get("values") orelse return false;
+    if (values != .array) return false;
+
+    for (values.array.items) |item| {
+        if (item != .object) continue;
+        const val = item.object.get("val") orelse continue;
+        if (val != .string) continue;
+
+        for (nsfw_labels) |label| {
+            if (mem.eql(u8, val.string, label)) return true;
+        }
+    }
+    return false;
+}
+
+fn hasNsfwKeywords(text: []const u8) bool {
+    // convert to lowercase for case-insensitive matching
+    var lower_buf: [4096]u8 = undefined;
+    const len = @min(text.len, lower_buf.len);
+    for (text[0..len], 0..) |c, i| {
+        lower_buf[i] = std.ascii.toLower(c);
+    }
+    const lower = lower_buf[0..len];
+
+    for (nsfw_keywords) |keyword| {
+        if (mem.indexOf(u8, lower, keyword) != null) return true;
+    }
+    return false;
+}

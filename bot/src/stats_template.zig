@@ -28,6 +28,14 @@ pub const html =
     \\  }}
     \\  .stat-label {{ color: #aaa; }}
     \\  .stat-value {{ font-weight: bold; }}
+    \\  .excluded {{
+    \\    margin-top: 20px;
+    \\    padding: 12px 0;
+    \\    color: #666;
+    \\    font-size: 0.9em;
+    \\  }}
+    \\  .excluded-label {{ color: #666; }}
+    \\  .excluded-value {{ color: #888; }}
     \\  h2 {{ color: #7bed9f; margin-top: 40px; font-size: 1.2em; }}
     \\  .bufo-grid {{
     \\    display: flex;
@@ -73,6 +81,7 @@ pub const html =
     \\    font-size: 0.9em;
     \\  }}
     \\  a {{ color: #7bed9f; }}
+    \\  .links {{ color: #666; margin-bottom: 30px; font-size: 0.9em; }}
     \\  .modal {{
     \\    display: none;
     \\    position: fixed;
@@ -106,6 +115,11 @@ pub const html =
     \\</head>
     \\<body>
     \\<h1>bufo-bot stats</h1>
+    \\<div class="links">
+    \\  <a href="https://find-bufo.com">find-bufo.com</a> ·
+    \\  <a href="https://bsky.app/profile/find-bufo.com">@find-bufo.com</a> ·
+    \\  <a href="https://tangled.org/zzstoatzz.io/find-bufo">source</a>
+    \\</div>
     \\
     \\<div class="stat">
     \\  <span class="stat-label">uptime</span>
@@ -136,14 +150,20 @@ pub const html =
     \\  <span class="stat-value" data-num="{}">{}</span>
     \\</div>
     \\
-    \\<h2>top bufos</h2>
+    \\<div class="excluded">
+    \\  <span class="excluded-label">excluded</span>
+    \\  <span class="excluded-value">posts with nsfw <a href="https://docs.bsky.app/docs/advanced-guides/moderation#labels">labels</a> or keywords</span>
+    \\</div>
+    \\
+    \\<h2>matched bufos</h2>
     \\<div class="bufo-grid">
     \\{s}
     \\</div>
     \\
     \\<div class="footer">
-    \\  <a href="https://find-bufo.com">find-bufo.com</a> |
-    \\  <a href="https://bsky.app/profile/find-bufo.com">@find-bufo.com</a>
+    \\  <a href="https://find-bufo.com">find-bufo.com</a> ·
+    \\  <a href="https://bsky.app/profile/find-bufo.com">@find-bufo.com</a> ·
+    \\  <a href="https://tangled.org/zzstoatzz.io/find-bufo">source</a>
     \\</div>
     \\<div id="modal" class="modal" onclick="if(event.target===this)closeModal()">
     \\  <div class="modal-content">

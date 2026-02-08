@@ -274,15 +274,13 @@ pub const Stats = struct {
         var top_html: std.ArrayList(u8) = .{};
         defer top_html.deinit(allocator);
 
-        const limit = @min(top_bufos.items.len, 20);
-
         // find max count for scaling
         var max_count: u64 = 1;
-        for (top_bufos.items[0..limit]) |entry| {
+        for (top_bufos.items) |entry| {
             if (entry.count > max_count) max_count = entry.count;
         }
 
-        for (top_bufos.items[0..limit]) |entry| {
+        for (top_bufos.items) |entry| {
             // scale size: min 60px, max 160px based on count ratio
             const ratio = @as(f64, @floatFromInt(entry.count)) / @as(f64, @floatFromInt(max_count));
             const size: u32 = @intFromFloat(60.0 + ratio * 100.0);
