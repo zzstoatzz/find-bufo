@@ -1,6 +1,7 @@
 // HTML template for stats page
 // format args: uptime_secs, uptime_str, posts_checked (x2), matches_found (x2),
-//              posts_created (x2), cooldowns_hit (x2), errors (x2), bufos_loaded (x2), top_section
+//              posts_created (x2), cooldowns_hit (x2), blocks_respected (x2),
+//              errors (x2), bufos_loaded (x2), top_section
 
 pub const html =
     \\<!DOCTYPE html>
@@ -139,6 +140,10 @@ pub const html =
     \\</div>
     \\<div class="stat">
     \\  <span class="stat-label">cooldowns hit</span>
+    \\  <span class="stat-value" data-num="{}">{}</span>
+    \\</div>
+    \\<div class="stat">
+    \\  <span class="stat-label">blocks respected</span>
     \\  <span class="stat-value" data-num="{}">{}</span>
     \\</div>
     \\<div class="stat">

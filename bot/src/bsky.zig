@@ -181,6 +181,50 @@ pub const BskyClient = struct {
         return json.Stringify.valueAlloc(self.allocator, blob, .{}) catch return error.SerializeError;
     }
 
+    pub fn isBlockedBy(self: *BskyClient, target_did: []const u8) !bool {
+        var client = self.httpClient();
+        defer client.deinit();
+
+        var url_buf: [512]u8 = undefined;
+        const url = std.fmt.bufPrint(&url_buf, "https://public.api.bsky.app/xrpc/app.bsky.graph.getRelationships?actor={s}&others={s}", .{ self.did.?, target_did }) catch return error.UrlTooLong;
+
+        var aw: Io.Writer.Allocating = .init(self.allocator);
+        defer aw.deinit();
+
+        const result = client.fetch(.{
+            .location = .{ .url = url },
+            .method = .GET,
+            .response_writer = &aw.writer,
+        }) catch |err| {
+            std.debug.print("block check failed: {}\n", .{err});
+            return err;
+        };
+
+        if (result.status != .ok) {
+            std.debug.print("block check failed with status: {}\n", .{result.status});
+            return error.BlockCheckFailed;
+        }
+
+        const response = aw.toArrayList();
+        const parsed = json.parseFromSlice(json.Value, self.allocator, response.items, .{}) catch return error.ParseError;
+        defer parsed.deinit();
+
+        const relationships = parsed.value.object.get("relationships") orelse return false;
+        if (relationships != .array) return false;
+        if (relationships.array.items.len == 0) return false;
+
+        const rel = relationships.array.items[0];
+        if (rel != .object) return false;
+
+        const blocked_by = rel.object.get("blockedBy") orelse return false;
+        if (blocked_by == .string) {
+            // presence of blockedBy with an AT-URI means we are blocked
+            return true;
+        }
+
+        return false;
+    }
+
     pub fn createQuotePost(self: *BskyClient, quote_uri: []const u8, quote_cid: []const u8, blob_json: []const u8, alt_text: []const u8) !void {
         if (self.access_jwt == null or self.did == null) return error.NotLoggedIn;
 

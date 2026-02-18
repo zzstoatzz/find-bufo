@@ -108,16 +108,29 @@ fn onPost(post: jetstream.Post) void {
     state.mutex.lock();
     defer state.mutex.unlock();
 
-    // check cooldown
+    // check cooldown (scaled by match frequency)
     const now = std.time.timestamp();
-    const cooldown_secs = @as(i64, @intCast(state.config.cooldown_minutes)) * 60;
+    const base_secs: u64 = @as(u64, state.config.cooldown_minutes) * 60;
+    const cooldown_secs: i64 = @intCast(state.stats.getCooldownSeconds(match.name, base_secs));
 
     if (state.recent_bufos.get(match.name)) |last_posted| {
         if (now - last_posted < cooldown_secs) {
             state.stats.incCooldownsHit();
-            std.debug.print("cooldown: {s} posted recently, skipping\n", .{match.name});
+            const cooldown_mins = @divTrunc(@as(u64, @intCast(cooldown_secs)), 60);
+            std.debug.print("cooldown: {s} ({} min), skipping\n", .{ match.name, cooldown_mins });
             return;
         }
+    }
+
+    // check if poster blocks us
+    const is_blocked = state.bsky_client.isBlockedBy(post.did) catch |err| blk: {
+        std.debug.print("block check failed: {}, proceeding with post\n", .{err});
+        break :blk false;
+    };
+    if (is_blocked) {
+        state.stats.incBlocksRespected();
+        std.debug.print("blocked by {s}, skipping\n", .{post.did});
+        return;
     }
 
     // try to post, with one retry on token expiration

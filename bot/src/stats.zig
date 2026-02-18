@@ -16,6 +16,7 @@ pub const Stats = struct {
     matches_found: std.atomic.Value(u64) = .init(0),
     posts_created: std.atomic.Value(u64) = .init(0),
     cooldowns_hit: std.atomic.Value(u64) = .init(0),
+    blocks_respected: std.atomic.Value(u64) = .init(0),
     errors: std.atomic.Value(u64) = .init(0),
     bufos_loaded: u64 = 0,
 
@@ -72,6 +73,9 @@ pub const Stats = struct {
         };
         if (root.get("cooldowns_hit")) |v| if (v == .integer) {
             self.cooldowns_hit.store(@intCast(@max(0, v.integer)), .monotonic);
+        };
+        if (root.get("blocks_respected")) |v| if (v == .integer) {
+            self.blocks_respected.store(@intCast(@max(0, v.integer)), .monotonic);
         };
         if (root.get("errors")) |v| if (v == .integer) {
             self.errors.store(@intCast(@max(0, v.integer)), .monotonic);
@@ -191,6 +195,7 @@ pub const Stats = struct {
         std.fmt.format(writer, "\"matches_found\":{},", .{self.matches_found.load(.monotonic)}) catch return;
         std.fmt.format(writer, "\"posts_created\":{},", .{self.posts_created.load(.monotonic)}) catch return;
         std.fmt.format(writer, "\"cooldowns_hit\":{},", .{self.cooldowns_hit.load(.monotonic)}) catch return;
+        std.fmt.format(writer, "\"blocks_respected\":{},", .{self.blocks_respected.load(.monotonic)}) catch return;
         std.fmt.format(writer, "\"errors\":{},", .{self.errors.load(.monotonic)}) catch return;
         std.fmt.format(writer, "\"cumulative_uptime\":{},", .{total_uptime}) catch return;
         writer.writeAll("\"bufo_matches\":{") catch return;
@@ -207,8 +212,32 @@ pub const Stats = struct {
         file.writeAll(fbs.getWritten()) catch return;
     }
 
+    const COOLDOWN_SCALE_FACTOR: f64 = 8.0;
+
+    pub fn getCooldownSeconds(self: *Stats, bufo_name: []const u8, base_secs: u64) u64 {
+        self.bufo_mutex.lock();
+        defer self.bufo_mutex.unlock();
+
+        const bufo_count: u64 = if (self.bufo_matches.get(bufo_name)) |data| data.count else 0;
+
+        var total_count: u64 = 0;
+        var iter = self.bufo_matches.iterator();
+        while (iter.next()) |entry| {
+            total_count += entry.value_ptr.count;
+        }
+        if (total_count == 0) return base_secs;
+
+        const ratio = @as(f64, @floatFromInt(bufo_count)) / @as(f64, @floatFromInt(total_count));
+        const multiplier = 1.0 + COOLDOWN_SCALE_FACTOR * ratio;
+        return @intFromFloat(@as(f64, @floatFromInt(base_secs)) * multiplier);
+    }
+
     pub fn incCooldownsHit(self: *Stats) void {
         _ = self.cooldowns_hit.fetchAdd(1, .monotonic);
+    }
+
+    pub fn incBlocksRespected(self: *Stats) void {
+        _ = self.blocks_respected.fetchAdd(1, .monotonic);
     }
 
     pub fn incErrors(self: *Stats) void {
@@ -316,6 +345,8 @@ pub const Stats = struct {
             self.posts_created.load(.monotonic),
             self.cooldowns_hit.load(.monotonic),
             self.cooldowns_hit.load(.monotonic),
+            self.blocks_respected.load(.monotonic),
+            self.blocks_respected.load(.monotonic),
             self.errors.load(.monotonic),
             self.errors.load(.monotonic),
             self.bufos_loaded,
