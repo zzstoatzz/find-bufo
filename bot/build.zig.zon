@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.15.0",
     .dependencies = .{
         .zat = .{
-            .url = "https://tangled.org/zat.dev/zat/archive/7123918.tar.gz",
-            .hash = "zat-0.1.0-5PuC7qrxAQBPP3pQ2fBn6E0FNJO5cZw_Qj3rM7gEiZYv",
+            .url = "https://tangled.sh/zat.dev/zat/archive/v0.1.9",
+            .hash = "zat-0.1.9-5PuC7tL5AwAgHHJXdOHTCy373NtwQW7cE2nfB7rq4yx_",
         },
     },
     .paths = .{

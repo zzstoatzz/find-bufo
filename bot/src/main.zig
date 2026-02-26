@@ -56,6 +56,7 @@ pub fn main() !void {
     var bot_stats = stats.Stats.init(allocator);
     defer bot_stats.deinit();
     bot_stats.setBufosLoaded(@intCast(m.count()));
+    bot_stats.jetstream_endpoint = cfg.jetstream_endpoint;
 
     // init state
     var state = BotState{
@@ -81,7 +82,7 @@ pub fn main() !void {
     // start jetstream consumer
     var handler = jetstream.PostHandler{ .callback = onPost };
     var client = zat.JetstreamClient.init(allocator, .{
-        .host = cfg.jetstream_endpoint,
+        .hosts = &.{cfg.jetstream_endpoint},
         .wanted_collections = &.{"app.bsky.feed.post"},
     });
     defer client.deinit();
