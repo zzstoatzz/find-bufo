@@ -19,6 +19,7 @@ pub const Stats = struct {
     blocks_respected: std.atomic.Value(u64) = .init(0),
     errors: std.atomic.Value(u64) = .init(0),
     bufos_loaded: u64 = 0,
+    jetstream_endpoint: []const u8 = "",
 
     // track per-bufo match counts: name -> {count, url}
     bufo_matches: std.StringHashMap(BufoMatchData),
@@ -337,6 +338,7 @@ pub const Stats = struct {
         const html = try std.fmt.allocPrint(allocator, template.html, .{
             uptime,
             uptime_str,
+            self.jetstream_endpoint,
             self.posts_checked.load(.monotonic),
             self.posts_checked.load(.monotonic),
             self.matches_found.load(.monotonic),

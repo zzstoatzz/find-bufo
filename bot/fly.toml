@@ -5,7 +5,7 @@ primary_region = "ewr"
   dockerfile = "Dockerfile"
 
 [env]
-  JETSTREAM_ENDPOINT = "jetstream2.us-east.bsky.network"
+  JETSTREAM_ENDPOINT = "jetstream.waow.tech"
   STATS_PORT = "8080"
 
 [http_service]
