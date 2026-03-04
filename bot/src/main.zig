@@ -18,7 +18,6 @@ const BotState = struct {
     config: config.Config,
     matcher: matcher.Matcher,
     bsky_client: bsky.BskyClient,
-    recent_bufos: std.StringHashMap(i64), // name -> timestamp
     mutex: Thread.Mutex = .{},
     stats: stats.Stats,
 };
@@ -64,10 +63,8 @@ pub fn main() !void {
         .config = cfg,
         .matcher = m,
         .bsky_client = bsky_client,
-        .recent_bufos = std.StringHashMap(i64).init(allocator),
         .stats = bot_stats,
     };
-    defer state.recent_bufos.deinit();
 
     global_state = &state;
 
@@ -109,12 +106,12 @@ fn onPost(post: jetstream.Post) void {
     state.mutex.lock();
     defer state.mutex.unlock();
 
-    // check cooldown (scaled by match frequency)
+    // check cooldown (scaled by match frequency, persisted across restarts)
     const now = std.time.timestamp();
     const base_secs: u64 = @as(u64, state.config.cooldown_minutes) * 60;
     const cooldown_secs: i64 = @intCast(state.stats.getCooldownSeconds(match.name, base_secs));
 
-    if (state.recent_bufos.get(match.name)) |last_posted| {
+    if (state.stats.getLastPosted(match.name)) |last_posted| {
         if (now - last_posted < cooldown_secs) {
             state.stats.incCooldownsHit();
             const cooldown_mins = @divTrunc(@as(u64, @intCast(cooldown_secs)), 60);
@@ -208,8 +205,8 @@ fn tryPost(state: *BotState, post: jetstream.Post, match: matcher.Match, now: i6
     std.debug.print("posted bufo quote: {s}\n", .{match.name});
     state.stats.incPostsCreated();
 
-    // update cooldown cache
-    state.recent_bufos.put(match.name, now) catch {};
+    // update cooldown cache (persisted to disk)
+    state.stats.setLastPosted(match.name, now);
 }
 
 fn loadBufos(allocator: Allocator, m: *matcher.Matcher, exclude_patterns: []const u8) !void {

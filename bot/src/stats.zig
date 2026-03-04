@@ -24,6 +24,8 @@ pub const Stats = struct {
     // track per-bufo match counts: name -> {count, url}
     bufo_matches: std.StringHashMap(BufoMatchData),
     bufo_mutex: Thread.Mutex = .{},
+    // track last post time per bufo (persisted to survive restarts)
+    last_posted: std.StringHashMap(i64),
 
     const BufoMatchData = struct {
         count: u64,
@@ -35,6 +37,7 @@ pub const Stats = struct {
             .allocator = allocator,
             .start_time = std.time.timestamp(),
             .bufo_matches = std.StringHashMap(BufoMatchData).init(allocator),
+            .last_posted = std.StringHashMap(i64).init(allocator),
         };
         self.load();
         return self;
@@ -48,6 +51,11 @@ pub const Stats = struct {
             self.allocator.free(entry.value_ptr.url);
         }
         self.bufo_matches.deinit();
+        var lp_iter = self.last_posted.iterator();
+        while (lp_iter.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.last_posted.deinit();
     }
 
     fn load(self: *Stats) void {
@@ -125,6 +133,21 @@ pub const Stats = struct {
                         }) catch {
                             self.allocator.free(key);
                             self.allocator.free(url);
+                        };
+                    }
+                }
+            }
+        }
+
+        // load last_posted timestamps
+        if (root.get("last_posted")) |lp| {
+            if (lp == .object) {
+                var lp_iter = lp.object.iterator();
+                while (lp_iter.next()) |entry| {
+                    if (entry.value_ptr.* == .integer) {
+                        const key = self.allocator.dupe(u8, entry.key_ptr.*) catch continue;
+                        self.last_posted.put(key, entry.value_ptr.integer) catch {
+                            self.allocator.free(key);
                         };
                     }
                 }
@@ -209,11 +232,25 @@ pub const Stats = struct {
             std.fmt.format(writer, "\"{s}\":{{\"count\":{},\"url\":\"{s}\"}}", .{ entry.key_ptr.*, entry.value_ptr.count, entry.value_ptr.url }) catch return;
         }
 
+        writer.writeAll("},") catch return;
+
+        // write last_posted timestamps
+        writer.writeAll("\"last_posted\":{") catch return;
+        var lp_first = true;
+        var lp_iter = self.last_posted.iterator();
+        while (lp_iter.next()) |entry| {
+            if (!lp_first) writer.writeAll(",") catch return;
+            lp_first = false;
+            std.fmt.format(writer, "\"{s}\":{}", .{ entry.key_ptr.*, entry.value_ptr.* }) catch return;
+        }
         writer.writeAll("}}") catch return;
+
         file.writeAll(fbs.getWritten()) catch return;
     }
 
-    const COOLDOWN_SCALE_FACTOR: f64 = 8.0;
+    /// Quadratic cooldown scaling: bufos that dominate the feed get exponentially longer cooldowns.
+    /// At 10% of matches: ~2x base. At 30%: ~10x base. At 50%: ~26x base.
+    const COOLDOWN_SCALE_FACTOR: f64 = 100.0;
 
     pub fn getCooldownSeconds(self: *Stats, bufo_name: []const u8, base_secs: u64) u64 {
         self.bufo_mutex.lock();
@@ -229,8 +266,29 @@ pub const Stats = struct {
         if (total_count == 0) return base_secs;
 
         const ratio = @as(f64, @floatFromInt(bufo_count)) / @as(f64, @floatFromInt(total_count));
-        const multiplier = 1.0 + COOLDOWN_SCALE_FACTOR * ratio;
+        // quadratic: dominant bufos get penalized much harder
+        const multiplier = 1.0 + COOLDOWN_SCALE_FACTOR * ratio * ratio;
         return @intFromFloat(@as(f64, @floatFromInt(base_secs)) * multiplier);
+    }
+
+    pub fn getLastPosted(self: *Stats, bufo_name: []const u8) ?i64 {
+        self.bufo_mutex.lock();
+        defer self.bufo_mutex.unlock();
+        return self.last_posted.get(bufo_name);
+    }
+
+    pub fn setLastPosted(self: *Stats, bufo_name: []const u8, timestamp: i64) void {
+        self.bufo_mutex.lock();
+        defer self.bufo_mutex.unlock();
+        if (self.last_posted.getPtr(bufo_name)) |ptr| {
+            ptr.* = timestamp;
+        } else {
+            const key = self.allocator.dupe(u8, bufo_name) catch return;
+            self.last_posted.put(key, timestamp) catch {
+                self.allocator.free(key);
+            };
+        }
+        self.saveUnlocked();
     }
 
     pub fn incCooldownsHit(self: *Stats) void {
