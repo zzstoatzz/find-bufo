@@ -55,7 +55,6 @@ pub fn main() !void {
     var bot_stats = stats.Stats.init(allocator);
     defer bot_stats.deinit();
     bot_stats.setBufosLoaded(@intCast(m.count()));
-    bot_stats.jetstream_endpoint = cfg.jetstream_endpoint;
 
     // init state
     var state = BotState{
@@ -76,14 +75,33 @@ pub fn main() !void {
     };
     defer stats_thread.join();
 
-    // start jetstream consumer
-    var handler = jetstream.PostHandler{ .callback = onPost };
+    // start jetstream consumer (use zat defaults with optional preferred relay)
+    var handler = jetstream.PostHandler{ .callback = onPost, .on_connect = onConnect };
+
+    // prepend preferred relay to default host list if set
+    var hosts_buf: [1 + zat.jetstream.default_hosts.len][]const u8 = undefined;
+    var hosts_len: usize = 0;
+    if (cfg.preferred_jetstream) |host| {
+        hosts_buf[0] = host;
+        hosts_len = 1;
+    }
+    for (zat.jetstream.default_hosts) |h| {
+        hosts_buf[hosts_len] = h;
+        hosts_len += 1;
+    }
+
     var client = zat.JetstreamClient.init(allocator, .{
-        .hosts = &.{cfg.jetstream_endpoint},
+        .hosts = hosts_buf[0..hosts_len],
         .wanted_collections = &.{"app.bsky.feed.post"},
     });
     defer client.deinit();
     client.subscribe(&handler);
+}
+
+fn onConnect(host: []const u8) void {
+    const state = global_state orelse return;
+    std.debug.print("connected to jetstream: {s}\n", .{host});
+    state.stats.setJetstreamHost(host);
 }
 
 fn onPost(post: jetstream.Post) void {
@@ -152,11 +170,17 @@ fn onPost(post: jetstream.Post) void {
 }
 
 fn tryPost(state: *BotState, post: jetstream.Post, match: matcher.Match, now: i64) !void {
-    // fetch bufo image
-    const img_data = try state.bsky_client.fetchImage(match.url);
-    defer state.allocator.free(img_data);
-
+    // fetch bufo image (route non-GIF images through resize proxy)
     const is_gif = mem.endsWith(u8, match.url, ".gif");
+
+    var url_buf: [1024]u8 = undefined;
+    const fetch_url = if (is_gif)
+        match.url
+    else
+        std.fmt.bufPrint(&url_buf, "{s}/api/image?url={s}&max_bytes=900000", .{ state.config.backend_url, match.url }) catch match.url;
+
+    const img_data = try state.bsky_client.fetchImage(fetch_url);
+    defer state.allocator.free(img_data);
 
     // build alt text (name without extension, dashes to spaces)
     var alt_buf: [128]u8 = undefined;

@@ -19,7 +19,8 @@ pub const Stats = struct {
     blocks_respected: std.atomic.Value(u64) = .init(0),
     errors: std.atomic.Value(u64) = .init(0),
     bufos_loaded: u64 = 0,
-    jetstream_endpoint: []const u8 = "",
+    jetstream_host_buf: [256]u8 = undefined,
+    jetstream_host_len: std.atomic.Value(usize) = .init(0),
 
     // track per-bufo match counts: name -> {count, url}
     bufo_matches: std.StringHashMap(BufoMatchData),
@@ -307,6 +308,18 @@ pub const Stats = struct {
         self.bufos_loaded = count;
     }
 
+    pub fn setJetstreamHost(self: *Stats, host: []const u8) void {
+        const len = @min(host.len, self.jetstream_host_buf.len);
+        @memcpy(self.jetstream_host_buf[0..len], host[0..len]);
+        self.jetstream_host_len.store(len, .release);
+    }
+
+    pub fn getJetstreamHost(self: *Stats) []const u8 {
+        const len = self.jetstream_host_len.load(.acquire);
+        if (len == 0) return "(connecting...)";
+        return self.jetstream_host_buf[0..len];
+    }
+
     fn formatUptime(seconds: i64, buf: []u8) []const u8 {
         const s: u64 = @intCast(@max(0, seconds));
         const days = s / 86400;
@@ -396,7 +409,7 @@ pub const Stats = struct {
         const html = try std.fmt.allocPrint(allocator, template.html, .{
             uptime,
             uptime_str,
-            self.jetstream_endpoint,
+            self.getJetstreamHost(),
             self.posts_checked.load(.monotonic),
             self.posts_checked.load(.monotonic),
             self.matches_found.load(.monotonic),

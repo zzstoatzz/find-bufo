@@ -4,23 +4,25 @@ const posix = std.posix;
 pub const Config = struct {
     bsky_handle: []const u8,
     bsky_app_password: []const u8,
-    jetstream_endpoint: []const u8,
+    preferred_jetstream: ?[]const u8,
     min_phrase_words: u32,
     posting_enabled: bool,
     cooldown_minutes: u32,
     exclude_patterns: []const u8,
     stats_port: u16,
+    backend_url: []const u8,
 
     pub fn fromEnv() Config {
         return .{
             .bsky_handle = posix.getenv("BSKY_HANDLE") orelse "find-bufo.com",
             .bsky_app_password = posix.getenv("BSKY_APP_PASSWORD") orelse "",
-            .jetstream_endpoint = posix.getenv("JETSTREAM_ENDPOINT") orelse "jetstream2.us-east.bsky.network",
+            .preferred_jetstream = posix.getenv("PREFERRED_JETSTREAM"),
             .min_phrase_words = parseU32(posix.getenv("MIN_PHRASE_WORDS"), 4),
             .posting_enabled = parseBool(posix.getenv("POSTING_ENABLED")),
             .cooldown_minutes = parseU32(posix.getenv("COOLDOWN_MINUTES"), 120),
             .exclude_patterns = posix.getenv("EXCLUDE_PATTERNS") orelse "what-have-you-done,what-have-i-done,sad,crying,cant-take",
             .stats_port = parseU16(posix.getenv("STATS_PORT"), 8080),
+            .backend_url = posix.getenv("BACKEND_URL") orelse "https://find-bufo.com",
         };
     }
 };

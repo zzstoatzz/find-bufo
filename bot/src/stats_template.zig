@@ -181,7 +181,7 @@ pub const html =
     \\  <span class="stat-value" id="uptime" data-seconds="{}">{s}</span>
     \\</div>
     \\<div class="stat">
-    \\  <span class="stat-label">relay</span>
+    \\  <span class="stat-label">jetstream</span>
     \\  <span class="stat-value">{s}</span>
     \\</div>
     \\<div class="stat">

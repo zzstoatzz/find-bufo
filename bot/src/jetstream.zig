@@ -36,6 +36,7 @@ pub const Post = struct {
 
 pub const PostHandler = struct {
     callback: *const fn (Post) void,
+    on_connect: ?*const fn ([]const u8) void = null,
 
     pub fn onEvent(self: *PostHandler, event: zat.JetstreamEvent) void {
         switch (event) {
@@ -46,6 +47,10 @@ pub const PostHandler = struct {
 
     pub fn onError(_: *PostHandler, err: anyerror) void {
         std.debug.print("jetstream error: {s}\n", .{@errorName(err)});
+    }
+
+    pub fn onConnect(self: *PostHandler, host: []const u8) void {
+        if (self.on_connect) |cb| cb(host);
     }
 
     fn handleCommit(self: *PostHandler, c: zat.jetstream.CommitEvent) void {
