@@ -1,6 +1,7 @@
 mod config;
 mod embedding;
 mod filter;
+mod image;
 mod providers;
 mod scoring;
 mod search;
@@ -66,6 +67,7 @@ async fn main() -> Result<()> {
                     .wrap(Governor::new(&governor_conf))
                     .route("/search", web::post().to(search::search))
                     .route("/search", web::get().to(search::search_get))
+                    .route("/image", web::get().to(image::resize_image))
                     .route("/health", web::get().to(|| async { HttpResponse::Ok().body("ok") }))
             )
             .service(fs::Files::new("/static", "./static").show_files_listing())
