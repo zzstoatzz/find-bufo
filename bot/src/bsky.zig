@@ -225,7 +225,7 @@ pub const BskyClient = struct {
         return false;
     }
 
-    pub fn createQuotePost(self: *BskyClient, quote_uri: []const u8, quote_cid: []const u8, blob_json: []const u8, alt_text: []const u8) !void {
+    pub fn createQuotePost(self: *BskyClient, quote_uri: []const u8, quote_cid: []const u8, blob_json: []const u8, alt_text: []const u8) ![]const u8 {
         if (self.access_jwt == null or self.did == null) return error.NotLoggedIn;
 
         var client = self.httpClient();
@@ -266,6 +266,7 @@ pub const BskyClient = struct {
         }
 
         std.debug.print("posted successfully!\n", .{});
+        return self.parseRkeyFromResponse(aw.toArrayList().items);
     }
 
     pub fn getPostCid(self: *BskyClient, uri: []const u8) ![]const u8 {
@@ -504,7 +505,7 @@ pub const BskyClient = struct {
         return error.VideoTimeout;
     }
 
-    pub fn createVideoQuotePost(self: *BskyClient, quote_uri: []const u8, quote_cid: []const u8, blob_json: []const u8, alt_text: []const u8) !void {
+    pub fn createVideoQuotePost(self: *BskyClient, quote_uri: []const u8, quote_cid: []const u8, blob_json: []const u8, alt_text: []const u8) ![]const u8 {
         if (self.access_jwt == null or self.did == null) return error.NotLoggedIn;
 
         var client = self.httpClient();
@@ -545,6 +546,172 @@ pub const BskyClient = struct {
         }
 
         std.debug.print("posted video successfully!\n", .{});
+        return self.parseRkeyFromResponse(aw.toArrayList().items);
+    }
+
+    pub fn deleteRecord(self: *BskyClient, rkey: []const u8) !void {
+        if (self.access_jwt == null or self.did == null) return error.NotLoggedIn;
+
+        var client = self.httpClient();
+        defer client.deinit();
+
+        var body_buf: std.ArrayList(u8) = .{};
+        defer body_buf.deinit(self.allocator);
+
+        try body_buf.print(self.allocator,
+            \\{{"repo":"{s}","collection":"app.bsky.feed.post","rkey":"{s}"}}
+        , .{ self.did.?, rkey });
+
+        var auth_buf: [512]u8 = undefined;
+        const auth_header = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{self.access_jwt.?}) catch return error.AuthTooLong;
+
+        var aw: Io.Writer.Allocating = .init(self.allocator);
+        defer aw.deinit();
+
+        const result = client.fetch(.{
+            .location = .{ .url = "https://bsky.social/xrpc/com.atproto.repo.deleteRecord" },
+            .method = .POST,
+            .headers = .{
+                .content_type = .{ .override = "application/json" },
+                .authorization = .{ .override = auth_header },
+            },
+            .payload = body_buf.items,
+            .response_writer = &aw.writer,
+        }) catch |err| {
+            std.debug.print("delete record failed: {}\n", .{err});
+            return err;
+        };
+
+        if (result.status != .ok) {
+            const response = aw.toArrayList();
+            std.debug.print("delete record failed with status: {} - {s}\n", .{ result.status, response.items });
+            return error.DeleteFailed;
+        }
+
+        std.debug.print("deleted record {s}\n", .{rkey});
+    }
+
+    pub const FeedPost = struct {
+        rkey: []const u8,
+        original_uri: []const u8,
+        original_did: []const u8,
+        is_stale: bool, // viewNotFound or viewDetached
+    };
+
+    /// fetch our own feed and return quote-posts with their embed status.
+    /// caller must free each entry's duped strings and the returned slice.
+    pub fn getAuthorFeed(self: *BskyClient, buf: []FeedPost) ![]FeedPost {
+        if (self.did == null) return error.NotLoggedIn;
+
+        var client = self.httpClient();
+        defer client.deinit();
+
+        var url_buf: [512]u8 = undefined;
+        const url = std.fmt.bufPrint(&url_buf, "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor={s}&limit=100&filter=posts_no_replies", .{self.did.?}) catch return error.UrlTooLong;
+
+        var aw: Io.Writer.Allocating = .init(self.allocator);
+        defer aw.deinit();
+
+        const result = client.fetch(.{
+            .location = .{ .url = url },
+            .method = .GET,
+            .response_writer = &aw.writer,
+        }) catch |err| {
+            std.debug.print("getAuthorFeed failed: {}\n", .{err});
+            return err;
+        };
+
+        if (result.status != .ok) {
+            std.debug.print("getAuthorFeed failed with status: {}\n", .{result.status});
+            return error.FeedFetchFailed;
+        }
+
+        const response = aw.toArrayList();
+        const parsed = json.parseFromSlice(json.Value, self.allocator, response.items, .{}) catch return error.ParseError;
+        defer parsed.deinit();
+
+        const feed = parsed.value.object.get("feed") orelse return buf[0..0];
+        if (feed != .array) return buf[0..0];
+
+        var count: usize = 0;
+        for (feed.array.items) |item| {
+            if (count >= buf.len) break;
+            if (item != .object) continue;
+
+            const post_obj = item.object.get("post") orelse continue;
+            if (post_obj != .object) continue;
+
+            // get our post's URI to extract rkey
+            const post_uri_val = post_obj.object.get("uri") orelse continue;
+            if (post_uri_val != .string) continue;
+
+            // check if it has an embed with a record (quote-post)
+            const embed = post_obj.object.get("embed") orelse continue;
+            if (embed != .object) continue;
+
+            // look for record in embed (recordWithMedia or record embed)
+            const record_obj = if (embed.object.get("record")) |r| r else continue;
+            if (record_obj != .object) continue;
+
+            // the embedded record view — check its $type
+            // for recordWithMedia, the record contains a "record" with the actual view
+            const inner_record = if (record_obj.object.get("record")) |r| r else record_obj;
+            if (inner_record != .object) continue;
+
+            const type_val = inner_record.object.get("$type") orelse continue;
+            if (type_val != .string) continue;
+
+            const is_stale = mem.eql(u8, type_val.string, "app.bsky.embed.record#viewNotFound") or
+                mem.eql(u8, type_val.string, "app.bsky.embed.record#viewDetached") or
+                mem.eql(u8, type_val.string, "app.bsky.embed.record#viewBlocked");
+
+            // extract the original post's URI from the inner record
+            const orig_uri_val = inner_record.object.get("uri") orelse continue;
+            if (orig_uri_val != .string) continue;
+
+            // parse our rkey from our post URI
+            var our_parts = mem.splitScalar(u8, post_uri_val.string[5..], '/');
+            _ = our_parts.next(); // did
+            _ = our_parts.next(); // collection
+            const our_rkey = our_parts.next() orelse continue;
+
+            // parse original DID from original URI
+            var orig_parts = mem.splitScalar(u8, orig_uri_val.string[5..], '/');
+            const orig_did = orig_parts.next() orelse continue;
+
+            buf[count] = .{
+                .rkey = self.allocator.dupe(u8, our_rkey) catch continue,
+                .original_uri = self.allocator.dupe(u8, orig_uri_val.string) catch {
+                    self.allocator.free(buf[count].rkey);
+                    continue;
+                },
+                .original_did = self.allocator.dupe(u8, orig_did) catch {
+                    self.allocator.free(buf[count].rkey);
+                    self.allocator.free(buf[count].original_uri);
+                    continue;
+                },
+                .is_stale = is_stale,
+            };
+            count += 1;
+        }
+
+        return buf[0..count];
+    }
+
+    fn parseRkeyFromResponse(self: *BskyClient, response: []const u8) ![]const u8 {
+        const parsed = json.parseFromSlice(json.Value, self.allocator, response, .{}) catch return error.ParseError;
+        defer parsed.deinit();
+
+        const uri_val = parsed.value.object.get("uri") orelse return error.NoUri;
+        if (uri_val != .string) return error.NoUri;
+
+        // parse rkey from at://did/collection/rkey
+        var parts = mem.splitScalar(u8, uri_val.string[5..], '/');
+        _ = parts.next(); // did
+        _ = parts.next(); // collection
+        const rkey = parts.next() orelse return error.InvalidUri;
+
+        return try self.allocator.dupe(u8, rkey);
     }
 };
 

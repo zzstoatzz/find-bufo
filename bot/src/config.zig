@@ -20,7 +20,7 @@ pub const Config = struct {
             .min_phrase_words = parseU32(posix.getenv("MIN_PHRASE_WORDS"), 4),
             .posting_enabled = parseBool(posix.getenv("POSTING_ENABLED")),
             .cooldown_minutes = parseU32(posix.getenv("COOLDOWN_MINUTES"), 120),
-            .exclude_patterns = posix.getenv("EXCLUDE_PATTERNS") orelse "what-have-you-done,what-have-i-done,sad,crying,cant-take",
+            .exclude_patterns = posix.getenv("EXCLUDE_PATTERNS") orelse "what-have-you-done,what-have-i-done,sad,crying,cant-take,knife,what-are-you-doing-with-that",
             .stats_port = parseU16(posix.getenv("STATS_PORT"), 8080),
             .backend_url = posix.getenv("BACKEND_URL") orelse "https://find-bufo.com",
         };

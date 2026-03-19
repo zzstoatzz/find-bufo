@@ -56,6 +56,9 @@ pub fn main() !void {
     defer bot_stats.deinit();
     bot_stats.setBufosLoaded(@intCast(m.count()));
 
+    // prune tracked posts older than 30 days
+    bot_stats.pruneOldPosts(30 * 86400);
+
     // init state
     var state = BotState{
         .allocator = allocator,
@@ -67,6 +70,11 @@ pub fn main() !void {
 
     global_state = &state;
 
+    // startup scan: bootstrap tracking and clean stale posts
+    if (cfg.posting_enabled) {
+        startupScan(&state);
+    }
+
     // start stats server on background thread
     var stats_server = stats.StatsServer.init(allocator, &state.stats, cfg.stats_port);
     const stats_thread = Thread.spawn(.{}, stats.StatsServer.run, .{&stats_server}) catch |err| {
@@ -76,7 +84,13 @@ pub fn main() !void {
     defer stats_thread.join();
 
     // start jetstream consumer (use zat defaults with optional preferred relay)
-    var handler = jetstream.PostHandler{ .callback = onPost, .on_connect = onConnect };
+    var handler = jetstream.PostHandler{
+        .callback = onPost,
+        .on_connect = onConnect,
+        .on_delete = onDelete,
+        .on_block = onBlock,
+        .on_detach = onDetach,
+    };
 
     // prepend preferred relay to default host list if set
     var hosts_buf: [1 + zat.jetstream.default_hosts.len][]const u8 = undefined;
@@ -92,7 +106,7 @@ pub fn main() !void {
 
     var client = zat.JetstreamClient.init(allocator, .{
         .hosts = hosts_buf[0..hosts_len],
-        .wanted_collections = &.{"app.bsky.feed.post"},
+        .wanted_collections = &.{ "app.bsky.feed.post", "app.bsky.graph.block", "app.bsky.feed.postgate" },
     });
     defer client.deinit();
     client.subscribe(&handler);
@@ -202,7 +216,7 @@ fn tryPost(state: *BotState, post: jetstream.Post, match: matcher.Match, now: i6
     const cid = try state.bsky_client.getPostCid(post.uri);
     defer state.allocator.free(cid);
 
-    if (is_gif) {
+    const our_rkey = if (is_gif) blk: {
         // upload as video for animated GIFs
         std.debug.print("uploading {d} bytes as video\n", .{img_data.len});
         const job_id = try state.bsky_client.uploadVideo(img_data, match.name);
@@ -212,8 +226,8 @@ fn tryPost(state: *BotState, post: jetstream.Post, match: matcher.Match, now: i6
         const blob_json = try state.bsky_client.waitForVideo(job_id);
         defer state.allocator.free(blob_json);
 
-        try state.bsky_client.createVideoQuotePost(post.uri, cid, blob_json, alt_text);
-    } else {
+        break :blk try state.bsky_client.createVideoQuotePost(post.uri, cid, blob_json, alt_text);
+    } else blk: {
         // upload as image
         const content_type = if (mem.endsWith(u8, match.url, ".png"))
             "image/png"
@@ -224,13 +238,149 @@ fn tryPost(state: *BotState, post: jetstream.Post, match: matcher.Match, now: i6
         const blob_json = try state.bsky_client.uploadBlob(img_data, content_type);
         defer state.allocator.free(blob_json);
 
-        try state.bsky_client.createQuotePost(post.uri, cid, blob_json, alt_text);
-    }
-    std.debug.print("posted bufo quote: {s}\n", .{match.name});
+        break :blk try state.bsky_client.createQuotePost(post.uri, cid, blob_json, alt_text);
+    };
+    defer state.allocator.free(our_rkey);
+
+    std.debug.print("posted bufo quote: {s} (rkey: {s})\n", .{ match.name, our_rkey });
     state.stats.incPostsCreated();
+
+    // track our post for cleanup on delete/block
+    state.stats.addTrackedPost(our_rkey, post.uri, post.did, now);
 
     // update cooldown cache (persisted to disk)
     state.stats.setLastPosted(match.name, now);
+}
+
+fn onDelete(did: []const u8, rkey: []const u8) void {
+    const state = global_state orelse return;
+
+    // construct the original URI and check if we quote-posted it
+    var uri_buf: [256]u8 = undefined;
+    const uri = std.fmt.bufPrint(&uri_buf, "at://{s}/app.bsky.feed.post/{s}", .{ did, rkey }) catch return;
+
+    const our_rkey = state.stats.removeByOriginalUri(uri) orelse return;
+    defer state.allocator.free(our_rkey);
+
+    std.debug.print("original post deleted ({s}), deleting our quote-post {s}\n", .{ uri, our_rkey });
+
+    state.mutex.lock();
+    defer state.mutex.unlock();
+
+    state.bsky_client.deleteRecord(our_rkey) catch |err| {
+        std.debug.print("failed to delete our post: {}\n", .{err});
+        state.stats.incErrors();
+    };
+}
+
+fn onBlock(blocker_did: []const u8, subject_did: []const u8) void {
+    const state = global_state orelse return;
+
+    // only care if someone is blocking us
+    const our_did = state.bsky_client.did orelse return;
+    if (!mem.eql(u8, subject_did, our_did)) return;
+
+    std.debug.print("blocked by {s}, cleaning up our quote-posts of their content\n", .{blocker_did});
+
+    state.mutex.lock();
+    defer state.mutex.unlock();
+
+    // collect and remove tracked posts from this DID
+    var rkey_buf: [64][]const u8 = undefined;
+    const rkeys = state.stats.removeByOriginalDid(blocker_did, &rkey_buf);
+
+    for (rkeys) |rkey| {
+        state.bsky_client.deleteRecord(rkey) catch |err| {
+            std.debug.print("failed to delete post {s}: {}\n", .{ rkey, err });
+            state.stats.incErrors();
+        };
+        state.allocator.free(rkey);
+    }
+
+    if (rkeys.len > 0) {
+        std.debug.print("deleted {} quote-posts after block from {s}\n", .{ rkeys.len, blocker_did });
+    }
+}
+
+fn onDetach(_: []const u8, record: json.Value) void {
+    const state = global_state orelse return;
+
+    // postgate record has detachedEmbeddingUris: array of AT-URIs that should no longer embed
+    const uris = record.object.get("detachedEmbeddingUris") orelse return;
+    if (uris != .array) return;
+
+    const our_did = state.bsky_client.did orelse return;
+
+    state.mutex.lock();
+    defer state.mutex.unlock();
+
+    for (uris.array.items) |uri_val| {
+        if (uri_val != .string) continue;
+
+        // check if this detached URI is one of our tracked posts
+        // the URI in detachedEmbeddingUris points to the embedding post (ours)
+        // parse rkey from at://did/app.bsky.feed.post/rkey
+        if (!mem.startsWith(u8, uri_val.string, "at://")) continue;
+        var parts = mem.splitScalar(u8, uri_val.string[5..], '/');
+        const uri_did = parts.next() orelse continue;
+
+        // only care about URIs pointing at our posts
+        if (!mem.eql(u8, uri_did, our_did)) continue;
+
+        _ = parts.next(); // collection
+        const rkey = parts.next() orelse continue;
+
+        if (state.stats.removeByOurRkey(rkey)) {
+            std.debug.print("post detached, deleting our quote-post {s}\n", .{rkey});
+            state.bsky_client.deleteRecord(rkey) catch |err| {
+                std.debug.print("failed to delete detached post {s}: {}\n", .{ rkey, err });
+                state.stats.incErrors();
+            };
+        }
+    }
+}
+
+fn startupScan(state: *BotState) void {
+    std.debug.print("running startup scan...\n", .{});
+
+    var feed_buf: [100]bsky.BskyClient.FeedPost = undefined;
+    const posts = state.bsky_client.getAuthorFeed(&feed_buf) catch |err| {
+        std.debug.print("startup scan failed: {}\n", .{err});
+        return;
+    };
+
+    var bootstrapped: usize = 0;
+    var cleaned: usize = 0;
+    const now = std.time.timestamp();
+
+    for (posts) |post| {
+        defer {
+            state.allocator.free(post.original_uri);
+            state.allocator.free(post.original_did);
+        }
+
+        if (post.is_stale) {
+            // delete stale post regardless of whether it was tracked
+            std.debug.print("startup: cleaning stale post {s}\n", .{post.rkey});
+            state.bsky_client.deleteRecord(post.rkey) catch |err| {
+                std.debug.print("startup: failed to delete {s}: {}\n", .{ post.rkey, err });
+                state.stats.incErrors();
+            };
+            // remove from tracking if present
+            _ = state.stats.removeByOurRkey(post.rkey);
+            state.allocator.free(post.rkey);
+            cleaned += 1;
+        } else {
+            // bootstrap tracking for posts we don't know about yet
+            if (!state.stats.isTracked(post.rkey)) {
+                state.stats.addTrackedPost(post.rkey, post.original_uri, post.original_did, now);
+                bootstrapped += 1;
+            }
+            state.allocator.free(post.rkey);
+        }
+    }
+
+    std.debug.print("startup scan complete: {} bootstrapped, {} cleaned\n", .{ bootstrapped, cleaned });
 }
 
 fn loadBufos(allocator: Allocator, m: *matcher.Matcher, exclude_patterns: []const u8) !void {

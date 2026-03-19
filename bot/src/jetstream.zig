@@ -37,6 +37,9 @@ pub const Post = struct {
 pub const PostHandler = struct {
     callback: *const fn (Post) void,
     on_connect: ?*const fn ([]const u8) void = null,
+    on_delete: ?*const fn ([]const u8, []const u8) void = null,
+    on_block: ?*const fn ([]const u8, []const u8) void = null,
+    on_detach: ?*const fn ([]const u8, json.Value) void = null,
 
     pub fn onEvent(self: *PostHandler, event: zat.JetstreamEvent) void {
         switch (event) {
@@ -54,6 +57,29 @@ pub const PostHandler = struct {
     }
 
     fn handleCommit(self: *PostHandler, c: zat.jetstream.CommitEvent) void {
+        if (mem.eql(u8, c.collection, "app.bsky.graph.block")) {
+            if (c.operation == .create) {
+                const record = c.record orelse return;
+                const subject = zat.json.getString(record, "subject") orelse return;
+                if (self.on_block) |cb| cb(c.did, subject);
+            }
+            return;
+        }
+
+        if (mem.eql(u8, c.collection, "app.bsky.feed.postgate")) {
+            if (c.operation == .create or c.operation == .update) {
+                const record = c.record orelse return;
+                if (self.on_detach) |cb| cb(c.did, record);
+            }
+            return;
+        }
+
+        // app.bsky.feed.post
+        if (c.operation == .delete) {
+            if (self.on_delete) |cb| cb(c.did, c.rkey);
+            return;
+        }
+
         if (c.operation != .create) return;
 
         const record = c.record orelse return;

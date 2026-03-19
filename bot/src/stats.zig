@@ -8,6 +8,13 @@ const template = @import("stats_template.zig");
 
 const STATS_PATH = "/data/stats.json";
 
+pub const TrackedPost = struct {
+    our_rkey: []const u8,
+    original_uri: []const u8,
+    original_did: []const u8,
+    timestamp: i64,
+};
+
 pub const Stats = struct {
     allocator: Allocator,
     start_time: i64,
@@ -27,6 +34,8 @@ pub const Stats = struct {
     bufo_mutex: Thread.Mutex = .{},
     // track last post time per bufo (persisted to survive restarts)
     last_posted: std.StringHashMap(i64),
+    // track our quote-posts for cleanup on delete/block
+    tracked_posts: std.ArrayList(TrackedPost),
 
     const BufoMatchData = struct {
         count: u64,
@@ -39,6 +48,7 @@ pub const Stats = struct {
             .start_time = std.time.timestamp(),
             .bufo_matches = std.StringHashMap(BufoMatchData).init(allocator),
             .last_posted = std.StringHashMap(i64).init(allocator),
+            .tracked_posts = .{},
         };
         self.load();
         return self;
@@ -57,6 +67,12 @@ pub const Stats = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.last_posted.deinit();
+        for (self.tracked_posts.items) |tp| {
+            self.allocator.free(tp.our_rkey);
+            self.allocator.free(tp.original_uri);
+            self.allocator.free(tp.original_did);
+        }
+        self.tracked_posts.deinit(self.allocator);
     }
 
     fn load(self: *Stats) void {
@@ -155,7 +171,42 @@ pub const Stats = struct {
             }
         }
 
-        std.debug.print("loaded stats from {s}\n", .{STATS_PATH});
+        // load tracked posts
+        if (root.get("tracked_posts")) |tp| {
+            if (tp == .array) {
+                for (tp.array.items) |item| {
+                    if (item != .object) continue;
+                    const rkey_val = item.object.get("our_rkey") orelse continue;
+                    const uri_val = item.object.get("original_uri") orelse continue;
+                    const did_val = item.object.get("original_did") orelse continue;
+                    const ts_val = item.object.get("timestamp") orelse continue;
+                    if (rkey_val != .string or uri_val != .string or did_val != .string or ts_val != .integer) continue;
+
+                    const rkey = self.allocator.dupe(u8, rkey_val.string) catch continue;
+                    const uri = self.allocator.dupe(u8, uri_val.string) catch {
+                        self.allocator.free(rkey);
+                        continue;
+                    };
+                    const did = self.allocator.dupe(u8, did_val.string) catch {
+                        self.allocator.free(rkey);
+                        self.allocator.free(uri);
+                        continue;
+                    };
+                    self.tracked_posts.append(self.allocator, .{
+                        .our_rkey = rkey,
+                        .original_uri = uri,
+                        .original_did = did,
+                        .timestamp = ts_val.integer,
+                    }) catch {
+                        self.allocator.free(rkey);
+                        self.allocator.free(uri);
+                        self.allocator.free(did);
+                    };
+                }
+            }
+        }
+
+        std.debug.print("loaded stats from {s} ({} tracked posts)\n", .{ STATS_PATH, self.tracked_posts.items.len });
     }
 
     pub fn save(self: *Stats) void {
@@ -244,7 +295,15 @@ pub const Stats = struct {
             lp_first = false;
             std.fmt.format(writer, "\"{s}\":{}", .{ entry.key_ptr.*, entry.value_ptr.* }) catch return;
         }
-        writer.writeAll("}}") catch return;
+        writer.writeAll("},") catch return;
+
+        // write tracked posts
+        writer.writeAll("\"tracked_posts\":[") catch return;
+        for (self.tracked_posts.items, 0..) |tp, i| {
+            if (i > 0) writer.writeAll(",") catch return;
+            std.fmt.format(writer, "{{\"our_rkey\":\"{s}\",\"original_uri\":\"{s}\",\"original_did\":\"{s}\",\"timestamp\":{}}}", .{ tp.our_rkey, tp.original_uri, tp.original_did, tp.timestamp }) catch return;
+        }
+        writer.writeAll("]}") catch return;
 
         file.writeAll(fbs.getWritten()) catch return;
     }
@@ -290,6 +349,126 @@ pub const Stats = struct {
             };
         }
         self.saveUnlocked();
+    }
+
+    pub fn addTrackedPost(self: *Stats, our_rkey: []const u8, original_uri: []const u8, original_did: []const u8, timestamp: i64) void {
+        self.bufo_mutex.lock();
+        defer self.bufo_mutex.unlock();
+
+        const rkey = self.allocator.dupe(u8, our_rkey) catch return;
+        const uri = self.allocator.dupe(u8, original_uri) catch {
+            self.allocator.free(rkey);
+            return;
+        };
+        const did = self.allocator.dupe(u8, original_did) catch {
+            self.allocator.free(rkey);
+            self.allocator.free(uri);
+            return;
+        };
+        self.tracked_posts.append(self.allocator, .{
+            .our_rkey = rkey,
+            .original_uri = uri,
+            .original_did = did,
+            .timestamp = timestamp,
+        }) catch {
+            self.allocator.free(rkey);
+            self.allocator.free(uri);
+            self.allocator.free(did);
+            return;
+        };
+        self.saveUnlocked();
+    }
+
+    /// atomically find+remove a tracked post by original URI, returning the caller-owned rkey
+    pub fn removeByOriginalUri(self: *Stats, uri: []const u8) ?[]const u8 {
+        self.bufo_mutex.lock();
+        defer self.bufo_mutex.unlock();
+
+        for (self.tracked_posts.items, 0..) |tp, i| {
+            if (mem.eql(u8, tp.original_uri, uri)) {
+                const removed = self.tracked_posts.orderedRemove(i);
+                self.allocator.free(removed.original_uri);
+                self.allocator.free(removed.original_did);
+                self.saveUnlocked();
+                return removed.our_rkey; // caller owns this
+            }
+        }
+        return null;
+    }
+
+    /// find+remove a tracked post by our rkey, returning true if found
+    pub fn removeByOurRkey(self: *Stats, rkey: []const u8) bool {
+        self.bufo_mutex.lock();
+        defer self.bufo_mutex.unlock();
+
+        for (self.tracked_posts.items, 0..) |tp, i| {
+            if (mem.eql(u8, tp.our_rkey, rkey)) {
+                const removed = self.tracked_posts.orderedRemove(i);
+                self.allocator.free(removed.our_rkey);
+                self.allocator.free(removed.original_uri);
+                self.allocator.free(removed.original_did);
+                self.saveUnlocked();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// check if a given rkey is already tracked
+    pub fn isTracked(self: *Stats, rkey: []const u8) bool {
+        self.bufo_mutex.lock();
+        defer self.bufo_mutex.unlock();
+
+        for (self.tracked_posts.items) |tp| {
+            if (mem.eql(u8, tp.our_rkey, rkey)) return true;
+        }
+        return false;
+    }
+
+    /// collect rkeys of tracked posts matching a given original DID, then remove them
+    pub fn removeByOriginalDid(self: *Stats, did: []const u8, buf: [][]const u8) [][]const u8 {
+        self.bufo_mutex.lock();
+        defer self.bufo_mutex.unlock();
+
+        var count: usize = 0;
+        var i: usize = 0;
+        while (i < self.tracked_posts.items.len and count < buf.len) {
+            if (mem.eql(u8, self.tracked_posts.items[i].original_did, did)) {
+                const tp = self.tracked_posts.orderedRemove(i);
+                buf[count] = tp.our_rkey;
+                self.allocator.free(tp.original_uri);
+                self.allocator.free(tp.original_did);
+                count += 1;
+            } else {
+                i += 1;
+            }
+        }
+        if (count > 0) self.saveUnlocked();
+        return buf[0..count];
+    }
+
+    pub fn pruneOldPosts(self: *Stats, max_age_secs: i64) void {
+        self.bufo_mutex.lock();
+        defer self.bufo_mutex.unlock();
+
+        const now = std.time.timestamp();
+        var i: usize = 0;
+        var pruned: usize = 0;
+        while (i < self.tracked_posts.items.len) {
+            if (now - self.tracked_posts.items[i].timestamp > max_age_secs) {
+                const tp = self.tracked_posts.orderedRemove(i);
+                self.allocator.free(tp.our_rkey);
+                self.allocator.free(tp.original_uri);
+                self.allocator.free(tp.original_did);
+                pruned += 1;
+            } else {
+                i += 1;
+            }
+        }
+        if (pruned > 0) {
+            std.debug.print("pruned {} old tracked posts\n", .{pruned});
+            self.saveUnlocked();
+        }
     }
 
     pub fn incCooldownsHit(self: *Stats) void {
