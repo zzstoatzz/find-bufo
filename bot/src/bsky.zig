@@ -615,6 +615,7 @@ pub const BskyClient = struct {
         const result = client.fetch(.{
             .location = .{ .url = url },
             .method = .GET,
+            .headers = .{ .accept_encoding = .{ .override = "identity" } },
             .response_writer = &aw.writer,
         }) catch |err| {
             std.debug.print("getAuthorFeed failed: {}\n", .{err});
