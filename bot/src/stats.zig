@@ -34,6 +34,8 @@ pub const Stats = struct {
     bufo_mutex: Thread.Mutex = .{},
     // track last post time per bufo (persisted to survive restarts)
     last_posted: std.StringHashMap(i64),
+    // global cooldown: timestamp of most recent post (any bufo)
+    last_global_post: ?i64 = null,
     // track our quote-posts for cleanup on delete/block
     tracked_posts: std.ArrayList(TrackedPost),
 
@@ -108,6 +110,9 @@ pub const Stats = struct {
         };
         if (root.get("cumulative_uptime")) |v| if (v == .integer) {
             self.prior_uptime = @intCast(@max(0, v.integer));
+        };
+        if (root.get("last_global_post")) |v| if (v == .integer) {
+            self.last_global_post = v.integer;
         };
 
         // load bufo_matches (or legacy bufo_posts)
@@ -274,6 +279,9 @@ pub const Stats = struct {
         std.fmt.format(writer, "\"blocks_respected\":{},", .{self.blocks_respected.load(.monotonic)}) catch return;
         std.fmt.format(writer, "\"errors\":{},", .{self.errors.load(.monotonic)}) catch return;
         std.fmt.format(writer, "\"cumulative_uptime\":{},", .{total_uptime}) catch return;
+        if (self.last_global_post) |lgp| {
+            std.fmt.format(writer, "\"last_global_post\":{},", .{lgp}) catch return;
+        }
         writer.writeAll("\"bufo_matches\":{") catch return;
 
         var first = true;
@@ -348,6 +356,19 @@ pub const Stats = struct {
                 self.allocator.free(key);
             };
         }
+        self.saveUnlocked();
+    }
+
+    pub fn getLastGlobalPost(self: *Stats) ?i64 {
+        self.bufo_mutex.lock();
+        defer self.bufo_mutex.unlock();
+        return self.last_global_post;
+    }
+
+    pub fn setLastGlobalPost(self: *Stats, timestamp: i64) void {
+        self.bufo_mutex.lock();
+        defer self.bufo_mutex.unlock();
+        self.last_global_post = timestamp;
         self.saveUnlocked();
     }
 

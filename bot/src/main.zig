@@ -138,8 +138,19 @@ fn onPost(post: jetstream.Post) void {
     state.mutex.lock();
     defer state.mutex.unlock();
 
-    // check cooldown (scaled by match frequency, persisted across restarts)
     const now = std.time.timestamp();
+
+    // global cooldown: minimum time between any post regardless of bufo
+    const global_cooldown_secs: i64 = @intCast(@as(u64, state.config.global_cooldown_minutes) * 60);
+    if (state.stats.getLastGlobalPost()) |last_global| {
+        if (now - last_global < global_cooldown_secs) {
+            state.stats.incCooldownsHit();
+            std.debug.print("global cooldown: {} min remaining, skipping\n", .{@divTrunc(@as(u64, @intCast(global_cooldown_secs - (now - last_global))), 60)});
+            return;
+        }
+    }
+
+    // per-bufo cooldown (scaled by match frequency, persisted across restarts)
     const base_secs: u64 = @as(u64, state.config.cooldown_minutes) * 60;
     const cooldown_secs: i64 = @intCast(state.stats.getCooldownSeconds(match.name, base_secs));
 
@@ -248,8 +259,9 @@ fn tryPost(state: *BotState, post: jetstream.Post, match: matcher.Match, now: i6
     // track our post for cleanup on delete/block
     state.stats.addTrackedPost(our_rkey, post.uri, post.did, now);
 
-    // update cooldown cache (persisted to disk)
+    // update cooldown caches (persisted to disk)
     state.stats.setLastPosted(match.name, now);
+    state.stats.setLastGlobalPost(now);
 }
 
 fn onDelete(did: []const u8, rkey: []const u8) void {
