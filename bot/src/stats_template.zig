@@ -39,6 +39,35 @@ pub const html =
     \\  .excluded-label {{ color: #666; }}
     \\  .excluded-value {{ color: #888; }}
     \\  h2 {{ color: #7bed9f; margin-top: 40px; font-size: 1.2em; }}
+    \\  .strategy {{
+    \\    margin-top: 30px;
+    \\    padding: 16px;
+    \\    background: #252542;
+    \\    border-radius: 8px;
+    \\    font-size: 0.9em;
+    \\    line-height: 1.6;
+    \\  }}
+    \\  .strategy p {{ color: #aaa; margin: 0 0 12px 0; }}
+    \\  .strategy p:last-child {{ margin-bottom: 0; }}
+    \\  .strategy-rates {{
+    \\    display: flex;
+    \\    gap: 16px;
+    \\    flex-wrap: wrap;
+    \\    margin-top: 8px;
+    \\  }}
+    \\  .strategy-rate {{
+    \\    color: #aaa;
+    \\    font-size: 0.85em;
+    \\  }}
+    \\  .strategy-rate span {{ color: #7bed9f; font-weight: bold; }}
+    \\  .cta {{
+    \\    margin-top: 30px;
+    \\    padding: 16px;
+    \\    background: #252542;
+    \\    border-radius: 8px;
+    \\    text-align: center;
+    \\  }}
+    \\  .cta p {{ color: #aaa; margin: 8px 0 0; font-size: 0.9em; }}
     \\  .bufo-grid {{
     \\    display: flex;
     \\    flex-wrap: wrap;
@@ -218,6 +247,13 @@ pub const html =
     \\  <span class="excluded-value">posts with nsfw <a href="https://docs.bsky.app/docs/advanced-guides/moderation#labels">labels</a> or keywords</span>
     \\</div>
     \\
+    \\<div class="strategy">
+    \\  <h2 style="margin-top:0">posting strategy</h2>
+    \\  <p>global cooldown of 30 min between any post, plus per-bufo scaling &mdash;
+    \\  bufos that match more often get longer cooldowns (quadratic: a bufo at 30% of matches waits ~10x longer).</p>
+    \\  <div class="strategy-rates" id="strategy-rates"></div>
+    \\</div>
+    \\
     \\<div class="lookup">
     \\  <h2>user lookup</h2>
     \\  <div class="lookup-form">
@@ -236,6 +272,11 @@ pub const html =
     \\<h2>matched bufos</h2>
     \\<div class="bufo-grid">
     \\{s}
+    \\</div>
+    \\
+    \\<div class="cta">
+    \\  <h2 style="margin-top:0">add your own bufo</h2>
+    \\  <p>have a bufo that should trigger find-bufo? <a href="https://tangled.org/zzstoatzz.io/find-bufo/blob/main/CONTRIBUTING.md">submit it via pull request</a></p>
     \\</div>
     \\
     \\<div class="footer">
@@ -257,9 +298,24 @@ pub const html =
     \\</div>
     \\<script>
     \\(function() {{
+    \\  const nums = {{}};
     \\  document.querySelectorAll('[data-num]').forEach(el => {{
-    \\    el.textContent = parseInt(el.dataset.num).toLocaleString();
+    \\    const v = parseInt(el.dataset.num);
+    \\    nums[el.previousElementSibling?.textContent?.trim()] = v;
+    \\    el.textContent = v.toLocaleString();
     \\  }});
+    \\  const pct = (a, b) => b > 0 ? (100 * a / b).toFixed(1) + '%' : '—';
+    \\  const ratesEl = document.getElementById('strategy-rates');
+    \\  if (ratesEl) {{
+    \\    const checked = nums['posts checked'] || 0;
+    \\    const matches = nums['matches found'] || 0;
+    \\    const posted = nums['bufos posted'] || 0;
+    \\    const cooldowns = nums['cooldowns hit'] || 0;
+    \\    ratesEl.innerHTML =
+    \\      '<div class="strategy-rate">match rate <span>' + pct(matches, checked) + '</span></div>' +
+    \\      '<div class="strategy-rate">post rate <span>' + pct(posted, matches) + '</span></div>' +
+    \\      '<div class="strategy-rate">cooldown rate <span>' + pct(cooldowns, matches) + '</span></div>';
+    \\  }}
     \\  const uptimeEl = document.getElementById('uptime');
     \\  let secs = parseInt(uptimeEl.dataset.seconds);
     \\  function fmt(s) {{
