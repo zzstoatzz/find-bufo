@@ -5,6 +5,17 @@ const http = std.http;
 const Allocator = mem.Allocator;
 const Io = std.Io;
 
+// module state — initialized via init(), not from a global
+var io: Io = undefined;
+
+pub fn init(app_io: Io) void {
+    io = app_io;
+}
+
+fn timestamp() i64 {
+    return @intCast(@divFloor(Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_s));
+}
+
 pub const BskyClient = struct {
     allocator: Allocator,
     handle: []const u8,
@@ -13,7 +24,7 @@ pub const BskyClient = struct {
     did: ?[]const u8 = null,
     pds_host: ?[]const u8 = null,
 
-    pub fn init(allocator: Allocator, handle: []const u8, app_password: []const u8) BskyClient {
+    pub fn initClient(allocator: Allocator, handle: []const u8, app_password: []const u8) BskyClient {
         return .{
             .allocator = allocator,
             .handle = handle,
@@ -28,7 +39,7 @@ pub const BskyClient = struct {
     }
 
     fn httpClient(self: *BskyClient) http.Client {
-        return .{ .allocator = self.allocator };
+        return .{ .allocator = self.allocator, .io = io };
     }
 
     pub fn login(self: *BskyClient) !void {
@@ -37,7 +48,7 @@ pub const BskyClient = struct {
         var client = self.httpClient();
         defer client.deinit();
 
-        var body_buf: std.ArrayList(u8) = .{};
+        var body_buf: std.ArrayList(u8) = .empty;
         defer body_buf.deinit(self.allocator);
         try body_buf.print(self.allocator, "{{\"identifier\":\"{s}\",\"password\":\"{s}\"}}", .{ self.handle, self.app_password });
 
@@ -231,7 +242,7 @@ pub const BskyClient = struct {
         var client = self.httpClient();
         defer client.deinit();
 
-        var body_buf: std.ArrayList(u8) = .{};
+        var body_buf: std.ArrayList(u8) = .empty;
         defer body_buf.deinit(self.allocator);
 
         var ts_buf: [30]u8 = undefined;
@@ -499,7 +510,7 @@ pub const BskyClient = struct {
                 return error.VideoProcessingFailed;
             }
 
-            std.Thread.sleep(1 * std.time.ns_per_s);
+            io.sleep(.{ .nanoseconds = 1 * std.time.ns_per_s }, .awake) catch {};
         }
 
         return error.VideoTimeout;
@@ -511,7 +522,7 @@ pub const BskyClient = struct {
         var client = self.httpClient();
         defer client.deinit();
 
-        var body_buf: std.ArrayList(u8) = .{};
+        var body_buf: std.ArrayList(u8) = .empty;
         defer body_buf.deinit(self.allocator);
 
         var ts_buf: [30]u8 = undefined;
@@ -555,7 +566,7 @@ pub const BskyClient = struct {
         var client = self.httpClient();
         defer client.deinit();
 
-        var body_buf: std.ArrayList(u8) = .{};
+        var body_buf: std.ArrayList(u8) = .empty;
         defer body_buf.deinit(self.allocator);
 
         try body_buf.print(self.allocator,
@@ -717,7 +728,7 @@ pub const BskyClient = struct {
 };
 
 fn getIsoTimestamp(buf: *[30]u8) []const u8 {
-    const ts = std.time.timestamp();
+    const ts = timestamp();
     const epoch_secs: u64 = @intCast(ts);
     const epoch = std.time.epoch.EpochSeconds{ .secs = epoch_secs };
     const day = epoch.getEpochDay();

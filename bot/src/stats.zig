@@ -1,12 +1,26 @@
 const std = @import("std");
 const mem = std.mem;
 const json = std.json;
-const fs = std.fs;
 const Allocator = mem.Allocator;
 const Thread = std.Thread;
+const Io = std.Io;
+const net = Io.net;
+const http = std.http;
 const template = @import("stats_template.zig");
 
 const STATS_PATH = "/data/stats.json";
+const STATS_TMP_PATH = "/data/stats.json.tmp";
+
+// module state — initialized via init(), not from a global
+var io: Io = undefined;
+
+pub fn init(app_io: Io) void {
+    io = app_io;
+}
+
+fn timestamp() i64 {
+    return @intCast(@divFloor(Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_s));
+}
 
 pub const TrackedPost = struct {
     our_rkey: []const u8,
@@ -29,13 +43,13 @@ pub const Stats = struct {
     jetstream_host_buf: [256]u8 = undefined,
     jetstream_host_len: std.atomic.Value(usize) = .init(0),
 
+    last_snapshot_hour: i64 = -1, // hour-of-day of last snapshot (-1 = none yet)
+
     // track per-bufo match counts: name -> {count, url}
     bufo_matches: std.StringHashMap(BufoMatchData),
-    bufo_mutex: Thread.Mutex = .{},
+    bufo_mutex: Io.Mutex = Io.Mutex.init,
     // track last post time per bufo (persisted to survive restarts)
     last_posted: std.StringHashMap(i64),
-    // global cooldown: timestamp of most recent post (any bufo)
-    last_global_post: ?i64 = null,
     // track our quote-posts for cleanup on delete/block
     tracked_posts: std.ArrayList(TrackedPost),
 
@@ -44,13 +58,13 @@ pub const Stats = struct {
         url: []const u8,
     };
 
-    pub fn init(allocator: Allocator) Stats {
+    pub fn initStats(allocator: Allocator) Stats {
         var self = Stats{
             .allocator = allocator,
-            .start_time = std.time.timestamp(),
+            .start_time = timestamp(),
             .bufo_matches = std.StringHashMap(BufoMatchData).init(allocator),
             .last_posted = std.StringHashMap(i64).init(allocator),
-            .tracked_posts = .{},
+            .tracked_posts = .empty,
         };
         self.load();
         return self;
@@ -78,11 +92,11 @@ pub const Stats = struct {
     }
 
     fn load(self: *Stats) void {
-        const file = fs.openFileAbsolute(STATS_PATH, .{}) catch return;
-        defer file.close();
+        const file = Io.Dir.openFileAbsolute(io, STATS_PATH, .{}) catch return;
+        defer file.close(io);
 
-        var buf: [64 * 1024]u8 = undefined;
-        const len = file.readAll(&buf) catch return;
+        var buf: [256 * 1024]u8 = undefined;
+        const len = file.readPositionalAll(io, &buf, 0) catch return;
         if (len == 0) return;
 
         const parsed = json.parseFromSlice(json.Value, self.allocator, buf[0..len], .{}) catch return;
@@ -111,10 +125,6 @@ pub const Stats = struct {
         if (root.get("cumulative_uptime")) |v| if (v == .integer) {
             self.prior_uptime = @intCast(@max(0, v.integer));
         };
-        if (root.get("last_global_post")) |v| if (v == .integer) {
-            self.last_global_post = v.integer;
-        };
-
         // load bufo_matches (or legacy bufo_posts)
         const matches_key = if (root.get("bufo_matches") != null) "bufo_matches" else "bufo_posts";
         if (root.get(matches_key)) |bp| {
@@ -215,13 +225,13 @@ pub const Stats = struct {
     }
 
     pub fn save(self: *Stats) void {
-        self.bufo_mutex.lock();
-        defer self.bufo_mutex.unlock();
+        self.bufo_mutex.lockUncancelable(io);
+        defer self.bufo_mutex.unlock(io);
         self.saveUnlocked();
     }
 
     pub fn totalUptime(self: *Stats) i64 {
-        const now = std.time.timestamp();
+        const now = timestamp();
         const session: i64 = now - self.start_time;
         return @as(i64, @intCast(self.prior_uptime)) + session;
     }
@@ -235,8 +245,8 @@ pub const Stats = struct {
     }
 
     pub fn incBufoMatch(self: *Stats, bufo_name: []const u8, bufo_url: []const u8) void {
-        self.bufo_mutex.lock();
-        defer self.bufo_mutex.unlock();
+        self.bufo_mutex.lockUncancelable(io);
+        defer self.bufo_mutex.unlock(io);
 
         if (self.bufo_matches.getPtr(bufo_name)) |data| {
             data.count += 1;
@@ -260,69 +270,78 @@ pub const Stats = struct {
 
     fn saveUnlocked(self: *Stats) void {
         // called when mutex is already held
-        const file = fs.createFileAbsolute(STATS_PATH, .{}) catch return;
-        defer file.close();
+        const file = Io.Dir.createFileAbsolute(io, STATS_TMP_PATH, .{}) catch return;
 
-        const now = std.time.timestamp();
+        const now = timestamp();
         const session_uptime: u64 = @intCast(@max(0, now - self.start_time));
         const total_uptime = self.prior_uptime + session_uptime;
 
-        var buf: [64 * 1024]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
-        const writer = fbs.writer();
+        var buf: [256 * 1024]u8 = undefined;
+        var w: Io.Writer = .fixed(&buf);
 
-        writer.writeAll("{") catch return;
-        std.fmt.format(writer, "\"posts_checked\":{},", .{self.posts_checked.load(.monotonic)}) catch return;
-        std.fmt.format(writer, "\"matches_found\":{},", .{self.matches_found.load(.monotonic)}) catch return;
-        std.fmt.format(writer, "\"posts_created\":{},", .{self.posts_created.load(.monotonic)}) catch return;
-        std.fmt.format(writer, "\"cooldowns_hit\":{},", .{self.cooldowns_hit.load(.monotonic)}) catch return;
-        std.fmt.format(writer, "\"blocks_respected\":{},", .{self.blocks_respected.load(.monotonic)}) catch return;
-        std.fmt.format(writer, "\"errors\":{},", .{self.errors.load(.monotonic)}) catch return;
-        std.fmt.format(writer, "\"cumulative_uptime\":{},", .{total_uptime}) catch return;
-        if (self.last_global_post) |lgp| {
-            std.fmt.format(writer, "\"last_global_post\":{},", .{lgp}) catch return;
-        }
-        writer.writeAll("\"bufo_matches\":{") catch return;
+        w.print("{{", .{}) catch return;
+        w.print("\"posts_checked\":{},", .{self.posts_checked.load(.monotonic)}) catch return;
+        w.print("\"matches_found\":{},", .{self.matches_found.load(.monotonic)}) catch return;
+        w.print("\"posts_created\":{},", .{self.posts_created.load(.monotonic)}) catch return;
+        w.print("\"cooldowns_hit\":{},", .{self.cooldowns_hit.load(.monotonic)}) catch return;
+        w.print("\"blocks_respected\":{},", .{self.blocks_respected.load(.monotonic)}) catch return;
+        w.print("\"errors\":{},", .{self.errors.load(.monotonic)}) catch return;
+        w.print("\"cumulative_uptime\":{},", .{total_uptime}) catch return;
+        w.print("\"bufo_matches\":{{", .{}) catch return;
 
         var first = true;
         var iter = self.bufo_matches.iterator();
         while (iter.next()) |entry| {
-            if (!first) writer.writeAll(",") catch return;
+            if (!first) w.print(",", .{}) catch return;
             first = false;
-            std.fmt.format(writer, "\"{s}\":{{\"count\":{},\"url\":\"{s}\"}}", .{ entry.key_ptr.*, entry.value_ptr.count, entry.value_ptr.url }) catch return;
+            w.print("\"{s}\":{{\"count\":{},\"url\":\"{s}\"}}", .{ entry.key_ptr.*, entry.value_ptr.count, entry.value_ptr.url }) catch return;
         }
 
-        writer.writeAll("},") catch return;
+        w.print("}},", .{}) catch return;
 
         // write last_posted timestamps
-        writer.writeAll("\"last_posted\":{") catch return;
+        w.print("\"last_posted\":{{", .{}) catch return;
         var lp_first = true;
         var lp_iter = self.last_posted.iterator();
         while (lp_iter.next()) |entry| {
-            if (!lp_first) writer.writeAll(",") catch return;
+            if (!lp_first) w.print(",", .{}) catch return;
             lp_first = false;
-            std.fmt.format(writer, "\"{s}\":{}", .{ entry.key_ptr.*, entry.value_ptr.* }) catch return;
+            w.print("\"{s}\":{}", .{ entry.key_ptr.*, entry.value_ptr.* }) catch return;
         }
-        writer.writeAll("},") catch return;
+        w.print("}},", .{}) catch return;
 
         // write tracked posts
-        writer.writeAll("\"tracked_posts\":[") catch return;
+        w.print("\"tracked_posts\":[", .{}) catch return;
         for (self.tracked_posts.items, 0..) |tp, i| {
-            if (i > 0) writer.writeAll(",") catch return;
-            std.fmt.format(writer, "{{\"our_rkey\":\"{s}\",\"original_uri\":\"{s}\",\"original_did\":\"{s}\",\"timestamp\":{}}}", .{ tp.our_rkey, tp.original_uri, tp.original_did, tp.timestamp }) catch return;
+            if (i > 0) w.print(",", .{}) catch return;
+            w.print("{{\"our_rkey\":\"{s}\",\"original_uri\":\"{s}\",\"original_did\":\"{s}\",\"timestamp\":{}}}", .{ tp.our_rkey, tp.original_uri, tp.original_did, tp.timestamp }) catch return;
         }
-        writer.writeAll("]}") catch return;
+        w.print("]}}", .{}) catch return;
 
-        file.writeAll(fbs.getWritten()) catch return;
+        const written = buf[0..w.end];
+        file.writeStreamingAll(io, written) catch return;
+        file.close(io);
+        Io.Dir.renameAbsolute(STATS_TMP_PATH, STATS_PATH, io) catch return;
+
+        // hourly snapshot: copy to /data/stats.snapshot.HH (24 rolling files)
+        const hour = @mod(@divTrunc(now, 3600), 24);
+        if (hour != self.last_snapshot_hour) {
+            self.last_snapshot_hour = hour;
+            var snap_path: [48]u8 = undefined;
+            const snap = std.fmt.bufPrint(&snap_path, "/data/stats.snapshot.{d:0>2}", .{@as(u64, @intCast(hour))}) catch return;
+            const snap_file = Io.Dir.createFileAbsolute(io, snap, .{}) catch return;
+            snap_file.writeStreamingAll(io, written) catch {};
+            snap_file.close(io);
+        }
     }
 
     /// Quadratic cooldown scaling: bufos that dominate the feed get exponentially longer cooldowns.
-    /// At 10% of matches: ~2x base. At 30%: ~10x base. At 50%: ~26x base.
-    const COOLDOWN_SCALE_FACTOR: f64 = 100.0;
+    /// At 5% of matches: ~1.5x base. At 20%: ~9x base. At 33%: ~23x base.
+    const COOLDOWN_SCALE_FACTOR: f64 = 200.0;
 
     pub fn getCooldownSeconds(self: *Stats, bufo_name: []const u8, base_secs: u64) u64 {
-        self.bufo_mutex.lock();
-        defer self.bufo_mutex.unlock();
+        self.bufo_mutex.lockUncancelable(io);
+        defer self.bufo_mutex.unlock(io);
 
         const bufo_count: u64 = if (self.bufo_matches.get(bufo_name)) |data| data.count else 0;
 
@@ -334,47 +353,36 @@ pub const Stats = struct {
         if (total_count == 0) return base_secs;
 
         const ratio = @as(f64, @floatFromInt(bufo_count)) / @as(f64, @floatFromInt(total_count));
+        // rare bufos (< 1% of matches) post immediately — no cooldown
+        if (ratio < 0.01) return 0;
         // quadratic: dominant bufos get penalized much harder
         const multiplier = 1.0 + COOLDOWN_SCALE_FACTOR * ratio * ratio;
         return @intFromFloat(@as(f64, @floatFromInt(base_secs)) * multiplier);
     }
 
     pub fn getLastPosted(self: *Stats, bufo_name: []const u8) ?i64 {
-        self.bufo_mutex.lock();
-        defer self.bufo_mutex.unlock();
+        self.bufo_mutex.lockUncancelable(io);
+        defer self.bufo_mutex.unlock(io);
         return self.last_posted.get(bufo_name);
     }
 
-    pub fn setLastPosted(self: *Stats, bufo_name: []const u8, timestamp: i64) void {
-        self.bufo_mutex.lock();
-        defer self.bufo_mutex.unlock();
+    pub fn setLastPosted(self: *Stats, bufo_name: []const u8, ts: i64) void {
+        self.bufo_mutex.lockUncancelable(io);
+        defer self.bufo_mutex.unlock(io);
         if (self.last_posted.getPtr(bufo_name)) |ptr| {
-            ptr.* = timestamp;
+            ptr.* = ts;
         } else {
             const key = self.allocator.dupe(u8, bufo_name) catch return;
-            self.last_posted.put(key, timestamp) catch {
+            self.last_posted.put(key, ts) catch {
                 self.allocator.free(key);
             };
         }
         self.saveUnlocked();
     }
 
-    pub fn getLastGlobalPost(self: *Stats) ?i64 {
-        self.bufo_mutex.lock();
-        defer self.bufo_mutex.unlock();
-        return self.last_global_post;
-    }
-
-    pub fn setLastGlobalPost(self: *Stats, timestamp: i64) void {
-        self.bufo_mutex.lock();
-        defer self.bufo_mutex.unlock();
-        self.last_global_post = timestamp;
-        self.saveUnlocked();
-    }
-
-    pub fn addTrackedPost(self: *Stats, our_rkey: []const u8, original_uri: []const u8, original_did: []const u8, timestamp: i64) void {
-        self.bufo_mutex.lock();
-        defer self.bufo_mutex.unlock();
+    pub fn addTrackedPost(self: *Stats, our_rkey: []const u8, original_uri: []const u8, original_did: []const u8, ts: i64) void {
+        self.bufo_mutex.lockUncancelable(io);
+        defer self.bufo_mutex.unlock(io);
 
         const rkey = self.allocator.dupe(u8, our_rkey) catch return;
         const uri = self.allocator.dupe(u8, original_uri) catch {
@@ -390,7 +398,7 @@ pub const Stats = struct {
             .our_rkey = rkey,
             .original_uri = uri,
             .original_did = did,
-            .timestamp = timestamp,
+            .timestamp = ts,
         }) catch {
             self.allocator.free(rkey);
             self.allocator.free(uri);
@@ -402,8 +410,8 @@ pub const Stats = struct {
 
     /// atomically find+remove a tracked post by original URI, returning the caller-owned rkey
     pub fn removeByOriginalUri(self: *Stats, uri: []const u8) ?[]const u8 {
-        self.bufo_mutex.lock();
-        defer self.bufo_mutex.unlock();
+        self.bufo_mutex.lockUncancelable(io);
+        defer self.bufo_mutex.unlock(io);
 
         for (self.tracked_posts.items, 0..) |tp, i| {
             if (mem.eql(u8, tp.original_uri, uri)) {
@@ -419,8 +427,8 @@ pub const Stats = struct {
 
     /// find+remove a tracked post by our rkey, returning true if found
     pub fn removeByOurRkey(self: *Stats, rkey: []const u8) bool {
-        self.bufo_mutex.lock();
-        defer self.bufo_mutex.unlock();
+        self.bufo_mutex.lockUncancelable(io);
+        defer self.bufo_mutex.unlock(io);
 
         for (self.tracked_posts.items, 0..) |tp, i| {
             if (mem.eql(u8, tp.our_rkey, rkey)) {
@@ -437,8 +445,8 @@ pub const Stats = struct {
 
     /// check if a given rkey is already tracked
     pub fn isTracked(self: *Stats, rkey: []const u8) bool {
-        self.bufo_mutex.lock();
-        defer self.bufo_mutex.unlock();
+        self.bufo_mutex.lockUncancelable(io);
+        defer self.bufo_mutex.unlock(io);
 
         for (self.tracked_posts.items) |tp| {
             if (mem.eql(u8, tp.our_rkey, rkey)) return true;
@@ -448,8 +456,8 @@ pub const Stats = struct {
 
     /// collect rkeys of tracked posts matching a given original DID, then remove them
     pub fn removeByOriginalDid(self: *Stats, did: []const u8, buf: [][]const u8) [][]const u8 {
-        self.bufo_mutex.lock();
-        defer self.bufo_mutex.unlock();
+        self.bufo_mutex.lockUncancelable(io);
+        defer self.bufo_mutex.unlock(io);
 
         var count: usize = 0;
         var i: usize = 0;
@@ -469,10 +477,10 @@ pub const Stats = struct {
     }
 
     pub fn pruneOldPosts(self: *Stats, max_age_secs: i64) void {
-        self.bufo_mutex.lock();
-        defer self.bufo_mutex.unlock();
+        self.bufo_mutex.lockUncancelable(io);
+        defer self.bufo_mutex.unlock(io);
 
-        const now = std.time.timestamp();
+        const now = timestamp();
         var i: usize = 0;
         var pruned: usize = 0;
         while (i < self.tracked_posts.items.len) {
@@ -555,12 +563,12 @@ pub const Stats = struct {
         };
 
         // collect top bufos
-        var top_bufos: std.ArrayList(BufoEntry) = .{};
+        var top_bufos: std.ArrayList(BufoEntry) = .empty;
         defer top_bufos.deinit(allocator);
 
         {
-            self.bufo_mutex.lock();
-            defer self.bufo_mutex.unlock();
+            self.bufo_mutex.lockUncancelable(io);
+            defer self.bufo_mutex.unlock(io);
 
             var iter = self.bufo_matches.iterator();
             while (iter.next()) |entry| {
@@ -572,7 +580,7 @@ pub const Stats = struct {
         mem.sort(BufoEntry, top_bufos.items, {}, BufoEntry.compare);
 
         // build top bufos grid html
-        var top_html: std.ArrayList(u8) = .{};
+        var top_html: std.ArrayList(u8) = .empty;
         defer top_html.deinit(allocator);
 
         // find max count for scaling
@@ -596,7 +604,7 @@ pub const Stats = struct {
                 display_name = entry.name[0 .. entry.name.len - 4];
             }
 
-            try std.fmt.format(top_html.writer(allocator),
+            try top_html.print(allocator,
                 \\<div class="bufo-card" style="width:{}px;height:{}px;" title="{s} ({} matches)" data-name="{s}" onclick="showPosts(this)">
                 \\<img src="{s}" alt="{s}" loading="lazy">
                 \\<span class="bufo-count">{}</span>
@@ -636,17 +644,21 @@ pub const StatsServer = struct {
     stats: *Stats,
     port: u16,
 
-    pub fn init(allocator: Allocator, stats: *Stats, port: u16) StatsServer {
+    pub fn initServer(allocator: Allocator, s: *Stats, port: u16) StatsServer {
         return .{
             .allocator = allocator,
-            .stats = stats,
+            .stats = s,
             .port = port,
         };
     }
 
     pub fn run(self: *StatsServer) void {
         // spawn periodic save ticker (every 60s)
-        _ = Thread.spawn(.{}, saveTicker, .{self.stats}) catch {};
+        const ticker = Thread.spawn(.{}, saveTicker, .{self.stats}) catch |err| {
+            std.debug.print("failed to start save ticker: {}\n", .{err});
+            return;
+        };
+        ticker.detach();
 
         self.serve() catch |err| {
             std.debug.print("stats server error: {}\n", .{err});
@@ -655,37 +667,45 @@ pub const StatsServer = struct {
 
     fn saveTicker(s: *Stats) void {
         while (true) {
-            std.Thread.sleep(60 * std.time.ns_per_s);
+            io.sleep(.{ .nanoseconds = 60 * std.time.ns_per_s }, .awake) catch {};
             s.save();
         }
     }
 
     fn serve(self: *StatsServer) !void {
-        const addr = std.net.Address.initIp4(.{ 0, 0, 0, 0 }, self.port);
+        var address = try net.IpAddress.parse("::", self.port);
+        var server = try net.IpAddress.listen(&address, io, .{ .reuse_address = true });
+        defer server.deinit(io);
 
-        var server = try addr.listen(.{ .reuse_address = true });
-        defer server.deinit();
-
-        std.debug.print("stats server listening on http://0.0.0.0:{}\n", .{self.port});
+        std.debug.print("stats server listening on http://[::]:{}  \n", .{self.port});
 
         while (true) {
-            const conn = server.accept() catch |err| {
+            const stream = server.accept(io) catch |err| {
                 std.debug.print("accept error: {}\n", .{err});
                 continue;
             };
 
-            self.handleConnection(conn) catch |err| {
-                std.debug.print("connection error: {}\n", .{err});
+            const t = Thread.spawn(.{}, handleConnection, .{ self, stream }) catch |err| {
+                std.debug.print("spawn error: {}\n", .{err});
+                stream.close(io);
+                continue;
             };
+            t.detach();
         }
     }
 
-    fn handleConnection(self: *StatsServer, conn: std.net.Server.Connection) !void {
-        defer conn.stream.close();
+    fn handleConnection(self: *StatsServer, stream: net.Stream) void {
+        defer stream.close(io);
 
-        // read request (we don't really care about it, just serve stats)
-        var buf: [1024]u8 = undefined;
-        _ = conn.stream.read(&buf) catch {};
+        var read_buffer: [4096]u8 = undefined;
+        var write_buffer: [8192]u8 = undefined;
+
+        var reader = net.Stream.Reader.init(stream, io, &read_buffer);
+        var writer = net.Stream.Writer.init(stream, io, &write_buffer);
+
+        var server = http.Server.init(&reader.interface, &writer.interface);
+
+        var request = server.receiveHead() catch return;
 
         const html = self.stats.renderHtml(self.allocator) catch |err| {
             std.debug.print("render error: {}\n", .{err});
@@ -693,11 +713,10 @@ pub const StatsServer = struct {
         };
         defer self.allocator.free(html);
 
-        // write raw HTTP response
-        var response_buf: [128]u8 = undefined;
-        const header = std.fmt.bufPrint(&response_buf, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", .{html.len}) catch return;
-
-        _ = conn.stream.write(header) catch return;
-        _ = conn.stream.write(html) catch return;
+        request.respond(html, .{
+            .extra_headers = &.{
+                .{ .name = "content-type", .value = "text/html; charset=utf-8" },
+            },
+        }) catch return;
     }
 };

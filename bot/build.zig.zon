@@ -2,11 +2,11 @@
     .name = .bufo_bot,
     .version = "0.0.1",
     .fingerprint = 0xe143490f82fa96db,
-    .minimum_zig_version = "0.15.0",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zat = .{
-            .url = "https://tangled.sh/zat.dev/zat/archive/v0.2.15",
-            .hash = "zat-0.2.15-5PuC7tjwBAAR5tL2Nc5LfSUaUORA6vONr1IdgaU4vAvo",
+            .url = "https://tangled.org/zat.dev/zat/archive/v0.3.0-alpha.7.tar.gz",
+            .hash = "zat-0.3.0-alpha.7-5PuC7uNjBQDv28db31DEKkFn1tU5I4f1GfJs-RrG8_pS",
         },
     },
     .paths = .{

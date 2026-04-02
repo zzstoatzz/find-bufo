@@ -4,12 +4,18 @@ const json = std.json;
 const http = std.http;
 const Thread = std.Thread;
 const Allocator = mem.Allocator;
+const Io = std.Io;
 const zat = @import("zat");
 const config = @import("config.zig");
 const matcher = @import("matcher.zig");
 const jetstream = @import("jetstream.zig");
 const bsky = @import("bsky.zig");
 const stats = @import("stats.zig");
+
+// Override the default single-threaded debug_io with a proper multi-threaded instance.
+// Initialized in main() before any threads are spawned.
+var app_threaded_io: Io.Threaded = undefined;
+pub const std_options_debug_threaded_io: ?*Io.Threaded = &app_threaded_io;
 
 var global_state: ?*BotState = null;
 
@@ -18,14 +24,20 @@ const BotState = struct {
     config: config.Config,
     matcher: matcher.Matcher,
     bsky_client: bsky.BskyClient,
-    mutex: Thread.Mutex = .{},
+    mutex: Io.Mutex = Io.Mutex.init,
     stats: stats.Stats,
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.smp_allocator;
+
+    // initialize the threaded Io instance before anything else
+    app_threaded_io = Io.Threaded.init(allocator, .{});
+    const io = app_threaded_io.io();
+
+    // initialize module-level io for bsky and stats
+    bsky.init(io);
+    stats.init(io);
 
     std.debug.print("starting bufo bot...\n", .{});
 
@@ -33,7 +45,7 @@ pub fn main() !void {
 
     // load bufos from API
     var m = matcher.Matcher.init(allocator, cfg.min_phrase_words);
-    try loadBufos(allocator, &m, cfg.exclude_patterns);
+    try loadBufos(allocator, &m, cfg.exclude_patterns, io);
     std.debug.print("loaded {} bufos with >= {} word phrases\n", .{ m.count(), cfg.min_phrase_words });
 
     if (m.count() == 0) {
@@ -42,7 +54,7 @@ pub fn main() !void {
     }
 
     // init bluesky client
-    var bsky_client = bsky.BskyClient.init(allocator, cfg.bsky_handle, cfg.bsky_app_password);
+    var bsky_client = bsky.BskyClient.initClient(allocator, cfg.bsky_handle, cfg.bsky_app_password);
     defer bsky_client.deinit();
 
     if (cfg.posting_enabled) {
@@ -52,7 +64,7 @@ pub fn main() !void {
     }
 
     // init stats
-    var bot_stats = stats.Stats.init(allocator);
+    var bot_stats = stats.Stats.initStats(allocator);
     defer bot_stats.deinit();
     bot_stats.setBufosLoaded(@intCast(m.count()));
 
@@ -72,11 +84,11 @@ pub fn main() !void {
 
     // startup scan: bootstrap tracking and clean stale posts
     if (cfg.posting_enabled) {
-        startupScan(&state);
+        startupScan(&state, io);
     }
 
     // start stats server on background thread
-    var stats_server = stats.StatsServer.init(allocator, &state.stats, cfg.stats_port);
+    var stats_server = stats.StatsServer.initServer(allocator, &state.stats, cfg.stats_port);
     const stats_thread = Thread.spawn(.{}, stats.StatsServer.run, .{&stats_server}) catch |err| {
         std.debug.print("failed to start stats server: {}\n", .{err});
         return err;
@@ -104,12 +116,14 @@ pub fn main() !void {
         hosts_len += 1;
     }
 
-    var client = zat.JetstreamClient.init(allocator, .{
+    var client = zat.JetstreamClient.init(io, allocator, .{
         .hosts = hosts_buf[0..hosts_len],
         .wanted_collections = &.{ "app.bsky.feed.post", "app.bsky.graph.block", "app.bsky.feed.postgate" },
     });
     defer client.deinit();
-    client.subscribe(&handler);
+    client.subscribe(&handler) catch |err| {
+        std.debug.print("jetstream subscription ended: {s}\n", .{@errorName(err)});
+    };
 }
 
 fn onConnect(host: []const u8) void {
@@ -120,6 +134,7 @@ fn onConnect(host: []const u8) void {
 
 fn onPost(post: jetstream.Post) void {
     const state = global_state orelse return;
+    const io = app_threaded_io.io();
 
     state.stats.incPostsChecked();
 
@@ -135,20 +150,10 @@ fn onPost(post: jetstream.Post) void {
         return;
     }
 
-    state.mutex.lock();
-    defer state.mutex.unlock();
+    state.mutex.lockUncancelable(io);
+    defer state.mutex.unlock(io);
 
-    const now = std.time.timestamp();
-
-    // global cooldown: minimum time between any post regardless of bufo
-    const global_cooldown_secs: i64 = @intCast(@as(u64, state.config.global_cooldown_minutes) * 60);
-    if (state.stats.getLastGlobalPost()) |last_global| {
-        if (now - last_global < global_cooldown_secs) {
-            state.stats.incCooldownsHit();
-            std.debug.print("global cooldown: {} min remaining, skipping\n", .{@divTrunc(@as(u64, @intCast(global_cooldown_secs - (now - last_global))), 60)});
-            return;
-        }
-    }
+    const now = timestamp(io);
 
     // per-bufo cooldown (scaled by match frequency, persisted across restarts)
     const base_secs: u64 = @as(u64, state.config.cooldown_minutes) * 60;
@@ -242,6 +247,8 @@ fn tryPost(state: *BotState, post: jetstream.Post, match: matcher.Match, now: i6
         // upload as image
         const content_type = if (mem.endsWith(u8, match.url, ".png"))
             "image/png"
+        else if (mem.endsWith(u8, match.url, ".webp"))
+            "image/webp"
         else
             "image/jpeg";
 
@@ -259,13 +266,13 @@ fn tryPost(state: *BotState, post: jetstream.Post, match: matcher.Match, now: i6
     // track our post for cleanup on delete/block
     state.stats.addTrackedPost(our_rkey, post.uri, post.did, now);
 
-    // update cooldown caches (persisted to disk)
+    // update cooldown cache (persisted to disk)
     state.stats.setLastPosted(match.name, now);
-    state.stats.setLastGlobalPost(now);
 }
 
 fn onDelete(did: []const u8, rkey: []const u8) void {
     const state = global_state orelse return;
+    const io = app_threaded_io.io();
 
     // construct the original URI and check if we quote-posted it
     var uri_buf: [256]u8 = undefined;
@@ -276,8 +283,8 @@ fn onDelete(did: []const u8, rkey: []const u8) void {
 
     std.debug.print("original post deleted ({s}), deleting our quote-post {s}\n", .{ uri, our_rkey });
 
-    state.mutex.lock();
-    defer state.mutex.unlock();
+    state.mutex.lockUncancelable(io);
+    defer state.mutex.unlock(io);
 
     state.bsky_client.deleteRecord(our_rkey) catch |err| {
         std.debug.print("failed to delete our post: {}\n", .{err});
@@ -287,6 +294,7 @@ fn onDelete(did: []const u8, rkey: []const u8) void {
 
 fn onBlock(blocker_did: []const u8, subject_did: []const u8) void {
     const state = global_state orelse return;
+    const io = app_threaded_io.io();
 
     // only care if someone is blocking us
     const our_did = state.bsky_client.did orelse return;
@@ -294,19 +302,19 @@ fn onBlock(blocker_did: []const u8, subject_did: []const u8) void {
 
     std.debug.print("blocked by {s}, cleaning up our quote-posts of their content\n", .{blocker_did});
 
-    state.mutex.lock();
-    defer state.mutex.unlock();
+    state.mutex.lockUncancelable(io);
+    defer state.mutex.unlock(io);
 
     // collect and remove tracked posts from this DID
     var rkey_buf: [64][]const u8 = undefined;
     const rkeys = state.stats.removeByOriginalDid(blocker_did, &rkey_buf);
 
-    for (rkeys) |rkey| {
-        state.bsky_client.deleteRecord(rkey) catch |err| {
-            std.debug.print("failed to delete post {s}: {}\n", .{ rkey, err });
+    for (rkeys) |rk| {
+        state.bsky_client.deleteRecord(rk) catch |err| {
+            std.debug.print("failed to delete post {s}: {}\n", .{ rk, err });
             state.stats.incErrors();
         };
-        state.allocator.free(rkey);
+        state.allocator.free(rk);
     }
 
     if (rkeys.len > 0) {
@@ -316,6 +324,7 @@ fn onBlock(blocker_did: []const u8, subject_did: []const u8) void {
 
 fn onDetach(_: []const u8, record: json.Value) void {
     const state = global_state orelse return;
+    const io = app_threaded_io.io();
 
     // postgate record has detachedEmbeddingUris: array of AT-URIs that should no longer embed
     const uris = record.object.get("detachedEmbeddingUris") orelse return;
@@ -323,8 +332,8 @@ fn onDetach(_: []const u8, record: json.Value) void {
 
     const our_did = state.bsky_client.did orelse return;
 
-    state.mutex.lock();
-    defer state.mutex.unlock();
+    state.mutex.lockUncancelable(io);
+    defer state.mutex.unlock(io);
 
     for (uris.array.items) |uri_val| {
         if (uri_val != .string) continue;
@@ -340,19 +349,20 @@ fn onDetach(_: []const u8, record: json.Value) void {
         if (!mem.eql(u8, uri_did, our_did)) continue;
 
         _ = parts.next(); // collection
-        const rkey = parts.next() orelse continue;
+        const rk = parts.next() orelse continue;
 
-        if (state.stats.removeByOurRkey(rkey)) {
-            std.debug.print("post detached, deleting our quote-post {s}\n", .{rkey});
-            state.bsky_client.deleteRecord(rkey) catch |err| {
-                std.debug.print("failed to delete detached post {s}: {}\n", .{ rkey, err });
+        if (state.stats.removeByOurRkey(rk)) {
+            std.debug.print("post detached, deleting our quote-post {s}\n", .{rk});
+            state.bsky_client.deleteRecord(rk) catch |err| {
+                std.debug.print("failed to delete detached post {s}: {}\n", .{ rk, err });
                 state.stats.incErrors();
             };
         }
     }
 }
 
-fn startupScan(state: *BotState) void {
+fn startupScan(state: *BotState, io_arg: Io) void {
+    _ = io_arg;
     std.debug.print("running startup scan...\n", .{});
 
     var feed_buf: [100]bsky.BskyClient.FeedPost = undefined;
@@ -363,7 +373,7 @@ fn startupScan(state: *BotState) void {
 
     var bootstrapped: usize = 0;
     var cleaned: usize = 0;
-    const now = std.time.timestamp();
+    const now = timestamp(app_threaded_io.io());
 
     for (posts) |post| {
         defer {
@@ -395,8 +405,12 @@ fn startupScan(state: *BotState) void {
     std.debug.print("startup scan complete: {} bootstrapped, {} cleaned\n", .{ bootstrapped, cleaned });
 }
 
-fn loadBufos(allocator: Allocator, m: *matcher.Matcher, exclude_patterns: []const u8) !void {
-    var client = http.Client{ .allocator = allocator };
+fn timestamp(io_arg: Io) i64 {
+    return @intCast(@divFloor(Io.Timestamp.now(io_arg, .real).nanoseconds, std.time.ns_per_s));
+}
+
+fn loadBufos(allocator: Allocator, m: *matcher.Matcher, exclude_patterns: []const u8, io_arg: Io) !void {
+    var client: http.Client = .{ .allocator = allocator, .io = io_arg };
     defer client.deinit();
 
     var url_buf: [512]u8 = undefined;

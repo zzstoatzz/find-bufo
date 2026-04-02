@@ -249,8 +249,8 @@ pub const html =
     \\
     \\<div class="strategy">
     \\  <h2 style="margin-top:0">posting strategy</h2>
-    \\  <p>global cooldown of 30 min between any post, plus per-bufo scaling &mdash;
-    \\  bufos that match more often get longer cooldowns (quadratic: a bufo at 30% of matches waits ~10x longer).</p>
+    \\  <p>rare bufos (&lt;1% of matches) post immediately &mdash; no cooldown. frequent bufos get
+    \\  quadratic scaling (a bufo at 30% of matches waits ~10x the base cooldown).</p>
     \\  <div class="strategy-rates" id="strategy-rates"></div>
     \\</div>
     \\

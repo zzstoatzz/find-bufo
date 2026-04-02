@@ -14,7 +14,7 @@ pub const Match = struct {
 };
 
 pub const Matcher = struct {
-    bufos: std.ArrayList(Bufo) = .{},
+    bufos: std.ArrayList(Bufo) = .empty,
     allocator: Allocator,
     min_words: u32,
 
@@ -54,7 +54,7 @@ pub const Matcher = struct {
     }
 
     pub fn findMatch(self: *Matcher, text: []const u8) ?Match {
-        var words: std.ArrayList([]const u8) = .{};
+        var words: std.ArrayList([]const u8) = .empty;
         defer words.deinit(self.allocator);
 
         var i: usize = 0;
@@ -101,11 +101,13 @@ fn extractPhrase(allocator: Allocator, name: []const u8) ![]const []const u8 {
         end -= 4;
     } else if (mem.endsWith(u8, name, ".jpeg")) {
         end -= 5;
+    } else if (mem.endsWith(u8, name, ".webp")) {
+        end -= 5;
     }
 
     const slug = name[start..end];
 
-    var words: std.ArrayList([]const u8) = .{};
+    var words: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (words.items) |word| allocator.free(word);
         words.deinit(allocator);
