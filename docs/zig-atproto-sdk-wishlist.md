@@ -1,6 +1,6 @@
 # zig atproto sdk wishlist
 
-a pie-in-the-sky wishlist for what a zig AT protocol sdk could provide, based on building [bufo-bot](../bot) - a bluesky firehose bot that quote-posts matching images.
+a pie-in-the-sky wishlist for what a zig AT protocol sdk could provide, based on building [bufo-bot](../bot) - a firehose bot that quote-posts matching images.
 
 ---
 
